@@ -3,15 +3,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
-	"github.com/gin-contrib/cors"
-	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
+	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -19,169 +17,219 @@ import (
 )
 
 type Post struct {
-	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
-	User      string             `bson:"user" json:"user"`
-	Caption   string             `bson:"caption" json:"caption"`
-	PhotoURL  string             `bson:"photoUrl" json:"photoUrl"`
-	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	User      string      `bson:"user" json:"user"`
+	Caption   string      `bson:"caption" json:"caption"`
+	PhotoURL  string      `bson:"photoUrl" json:"photoUrl"`
+	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
-
 
 type Message struct {
-	Username  string `json:"username"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
+	Sender    string    `bson:"sender" json:"sender"`
+	Receiver  string    `bson:"receiver" json:"receiver"`
+	Message   string    `bson:"message" json:"message"`
+	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
 }
 
-var (
-	postsColl *mongo.Collection
-	client    *mongo.Client
-	upgrader  = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	clients   = make(map[*websocket.Conn]bool)
-	broadcast = make(chan Message)
-	mu        sync.Mutex
-)
+type Module struct {
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	Title     string      `bson:"title" json:"title"`
+	FileName  string      `bson:"fileName" json:"fileName"`
+	FileURL   string      `bson:"fileUrl" json:"fileUrl"`
+	FileType  string      `bson:"fileType" json:"fileType"`
+	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
+}
+
+var postsColl, messagesColl, modulesColl *mongo.Collection
 
 func main() {
-	// Load environment variables
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("No .env file found, continuing...")
-	}
-
+	_ = godotenv.Load()
 	mongoURI := os.Getenv("MONGO_URI")
 	dbName := os.Getenv("DB_NAME")
 	port := os.Getenv("PORT")
-
-	if mongoURI == "" {
-		log.Fatal("Missing MONGO_URI in .env")
-	}
-	if dbName == "" {
-		dbName = "mydb"
-	}
 	if port == "" {
-		port = "8080"
+		port = "8084"
 	}
 
-	// Connect to MongoDB
+	// MongoDB connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err = mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal(err)
 	}
-	postsColl = client.Database(dbName).Collection("posts")
+
+	db := client.Database(dbName)
+	postsColl = db.Collection("posts")
+	messagesColl = db.Collection("messages")
+	modulesColl = db.Collection("modules")
 	log.Println("Connected to MongoDB:", dbName)
 
-	// Setup Gin
-	r := gin.Default()
-
-	// CORS
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		AllowCredentials: true,
-	}))
-
-	// Routes
-	r.POST("/uploadPost", uploadPostHandler)
-	r.GET("/posts", getPostsHandler)
-	r.GET("/ws", func(c *gin.Context) {
-		handleConnections(c.Writer, c.Request)
+	// Socket.io for chat
+	server := socketio.NewServer(nil)
+	server.OnConnect("/", func(s socketio.Conn) error {
+		log.Println("New connection:", s.ID())
+		s.Join("global")
+		return nil
 	})
 
-	go handleMessages()
+	server.OnEvent("/", "send_message", func(s socketio.Conn, msg Message) {
+		msg.CreatedAt = time.Now()
+		_, err := messagesColl.InsertOne(context.Background(), msg)
+		if err != nil {
+			log.Println("DB insert error:", err)
+			return
+		}
+		// broadcast
+		server.BroadcastToRoom("/", "global", "receive_message", msg)
+	})
 
-	// Start server
-	log.Println("Listening on :" + port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatal("Server failed:", err)
+	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
+		log.Println("Disconnected:", s.ID(), reason)
+	})
+
+	go server.Serve()
+	defer server.Close()
+
+	// Routes
+	http.HandleFunc("/posts", cors(getPostsHandler))
+	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
+
+	http.HandleFunc("/getMessages", cors(getMessagesHandler))
+	http.HandleFunc("/sendMessage", cors(sendMessageHandler))
+
+	http.HandleFunc("/modules", cors(getModulesHandler))
+	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
+
+	http.Handle("/socket.io/", server)
+
+	log.Println("Server listening on port:", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+// -------------------- CORS --------------------
+func cors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
 	}
 }
 
-// --- TIMELINE HANDLERS ---
-func uploadPostHandler(c *gin.Context) {
-	var post Post
-	if err := c.BindJSON(&post); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	post.CreatedAt = time.Now().UTC()
-
-	_, err := postsColl.InsertOne(context.Background(), post)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save post"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
-
-func getPostsHandler(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// -------------------- POSTS --------------------
+func getPostsHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-
-	cur, err := postsColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}).SetLimit(100))
+	cur, err := postsColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	defer cur.Close(ctx)
-
 	var posts []Post
 	if err := cur.All(ctx, &posts); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-
-	c.JSON(http.StatusOK, posts)
+	json.NewEncoder(w).Encode(posts)
 }
 
-// --- CHAT HANDLERS ---
-func handleConnections(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
+func uploadPostHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var p Post
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	p.CreatedAt = time.Now().UTC()
+	_, err := postsColl.InsertOne(r.Context(), p)
 	if err != nil {
-		log.Println("WebSocket Upgrade Error:", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	defer ws.Close()
-
-	mu.Lock()
-	clients[ws] = true
-	mu.Unlock()
-
-	for {
-		var msg Message
-		err := ws.ReadJSON(&msg)
-		if err != nil {
-			log.Println("WebSocket Read Error:", err)
-			mu.Lock()
-			delete(clients, ws)
-			mu.Unlock()
-			break
-		}
-		msg.Timestamp = time.Now().Format("15:04:05")
-		broadcast <- msg
-	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func handleMessages() {
-	for {
-		msg := <-broadcast
-		mu.Lock()
-		for client := range clients {
-			err := client.WriteJSON(msg)
-			if err != nil {
-				log.Println("WebSocket Write Error:", err)
-				client.Close()
-				delete(clients, client)
-			}
-		}
-		mu.Unlock()
+// -------------------- CHAT --------------------
+func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	cur, err := messagesColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", 1}}))
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
 	}
+	defer cur.Close(ctx)
+	var msgs []Message
+	if err := cur.All(ctx, &msgs); err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(msgs)
+}
+
+func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var msg Message
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	msg.CreatedAt = time.Now()
+	_, err := messagesColl.InsertOne(r.Context(), msg)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// -------------------- MODULES --------------------
+func getModulesHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	cur, err := modulesColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}))
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(ctx)
+	var modules []Module
+	if err := cur.All(ctx, &modules); err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(modules)
+}
+
+func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var m Module
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	m.CreatedAt = time.Now()
+	_, err := modulesColl.InsertOne(r.Context(), m)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
