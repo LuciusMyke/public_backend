@@ -1,176 +1,184 @@
 //go:generate go get github.com/gin-gonic/gin github.com/gin-contrib/cors github.com/googollee/go-socket.io
-
 package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/googollee/go-socket.io"
+	socketio "github.com/googollee/go-socket.io"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var client *mongo.Client
-var messagesCollection *mongo.Collection
-var postsCollection *mongo.Collection
-var server *socketio.Server
+var postsColl *mongo.Collection
+var messagesColl *mongo.Collection
 
-func main() {
-	// Connect to MongoDB
-	mongoURI := os.Getenv("MONGO_URI")
-	if mongoURI == "" {
-		mongoURI = "your-mongodb-uri-here"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var err error
-	client, err = mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+// ✅ MongoDB connection
+func initMongo() *mongo.Client {
+	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI("YOUR_MONGODB_URI"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Mongo connection error:", err)
 	}
-
-	db := client.Database("chatbot_db")
-	messagesCollection = db.Collection("messages")
-	postsCollection = db.Collection("posts")
-
-	// Setup Socket.io
-	server = socketio.NewServer(nil)
-
-	server.OnConnect("/", func(s socketio.Conn) error {
-		s.SetContext("")
-		fmt.Println("New user connected:", s.ID())
-		return nil
-	})
-
-	server.OnEvent("/", "send_message", func(s socketio.Conn, msg map[string]interface{}) {
-		fmt.Println("Message received:", msg)
-		server.BroadcastToNamespace("/", "receive_message", msg)
-	})
-
-	server.OnError("/", func(s socketio.Conn, e error) {
-		fmt.Println("Socket error:", e)
-	})
-	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		fmt.Println("Socket disconnected:", reason)
-	})
-
-	go server.Serve()
-	defer server.Close()
-
-	// Setup Gin routes
-	r := gin.Default()
-
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
-		AllowCredentials: true,
-	}))
-
-	r.GET("/socket.io/*any", gin.WrapH(server))
-	r.POST("/socket.io/*any", gin.WrapH(server))
-
-	r.POST("/sendMessage", sendMessageHandler)
-	r.GET("/getMessages", getMessagesHandler)
-	r.POST("/uploadPost", uploadPostHandler)
-	r.GET("/getPosts", getPostsHandler)
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	r.Run(":" + port)
+	return client
 }
 
-func sendMessageHandler(c *gin.Context) {
-	var msg bson.M
-	if err := c.BindJSON(&msg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// ✅ Data models
+type Post struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	Author    string             `bson:"author" json:"user"`
+	Content   string             `bson:"content" json:"caption"`
+	ImageURL  string             `bson:"imageURL" json:"photoUrl"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+}
+
+type Message struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	Sender    string             `bson:"sender" json:"sender"`
+	Text      string             `bson:"text" json:"message"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+}
+
+// ✅ Upload a post (from Tauri or React Native)
+func uploadPostHandler(c *gin.Context) {
+	var req struct {
+		User     string `json:"user"`
+		Caption  string `json:"caption"`
+		PhotoUrl string `json:"photoUrl"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
 
-	msg["created_at"] = time.Now()
-	_, err := messagesCollection.InsertOne(context.Background(), msg)
+	post := Post{
+		Author:    req.User,
+		Content:   req.Caption,
+		ImageURL:  req.PhotoUrl,
+		CreatedAt: time.Now(),
+	}
+
+	_, err := postsColl.InsertOne(context.Background(), post)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save message"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save post"})
 		return
 	}
 
-	server.BroadcastToNamespace("/", "receive_message", msg)
-	c.JSON(http.StatusOK, msg)
+	c.JSON(http.StatusOK, gin.H{"message": "post saved"})
+}
+
+// ✅ Fetch all posts
+func getPostsHandler(c *gin.Context) {
+	cursor, err := postsColl.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var posts []Post
+	if err := cursor.All(context.Background(), &posts); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "parse error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, posts)
+}
+
+// ✅ Chat message handlers
+func saveMessage(sender, text string) {
+	msg := Message{
+		Sender:    sender,
+		Text:      text,
+		CreatedAt: time.Now(),
+	}
+	_, _ = messagesColl.InsertOne(context.Background(), msg)
 }
 
 func getMessagesHandler(c *gin.Context) {
-	cur, err := messagesCollection.Find(context.Background(), bson.M{})
+	cursor, err := messagesColl.Find(context.Background(), bson.M{})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	defer cur.Close(context.Background())
+	defer cursor.Close(context.Background())
 
-	var messages []bson.M
-	if err = cur.All(context.Background(), &messages); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	var messages []Message
+	if err := cursor.All(context.Background(), &messages); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "parse error"})
 		return
 	}
 
 	c.JSON(http.StatusOK, messages)
 }
 
-func uploadPostHandler(c *gin.Context) {
-	file, err := c.FormFile("image")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No image provided"})
-		return
-	}
+// ✅ Main function
+func main() {
+	client := initMongo()
+	db := client.Database("school_app")
+	postsColl = db.Collection("posts")
+	messagesColl = db.Collection("messages")
 
-	imagePath := fmt.Sprintf("./uploads/%s", file.Filename)
-	c.SaveUploadedFile(file, imagePath)
+	r := gin.Default()
 
-	post := bson.M{
-		"image":      file.Filename,
-		"description": c.PostForm("description"),
-		"created_at": time.Now(),
-	}
-	_, err = postsCollection.InsertOne(context.Background(), post)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload post"})
-		return
-	}
+	// Enable CORS for mobile + desktop clients
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type"},
+		AllowCredentials: true,
+	}))
 
-	c.JSON(http.StatusOK, gin.H{"message": "Post uploaded"})
+	// ✅ Socket.IO setup
+	server := socketio.NewServer(nil)
+
+	server.OnConnect("/", func(s socketio.Conn) error {
+		log.Println("Client connected:", s.ID())
+		return nil
+	})
+
+	server.OnEvent("/", "send_message", func(s socketio.Conn, msg map[string]string) {
+		sender := msg["sender"]
+		text := msg["message"]
+
+		saveMessage(sender, text)
+		server.BroadcastToNamespace("/", "receive_message", msg)
+	})
+
+	server.OnError("/", func(s socketio.Conn, e error) {
+		log.Println("Socket error:", e)
+	})
+
+	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
+		log.Println("Client disconnected:", reason)
+	})
+
+	go server.Serve()
+	defer server.Close()
+
+	// ✅ API routes
+	r.GET("/posts", getPostsHandler)
+	r.POST("/uploadPost", uploadPostHandler)
+
+	r.GET("/getMessages", getMessagesHandler)
+
+	// Attach Socket.IO
+	r.GET("/socket.io/*any", gin.WrapH(server))
+	r.POST("/socket.io/*any", gin.WrapH(server))
+
+	port := "8080"
+	log.Println("🚀 Server running on port", port)
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal("Server error:", err)
+	}
 }
-
-func getPostsHandler(c *gin.Context) {
-	cur, err := postsCollection.Find(context.Background(), bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	defer cur.Close(context.Background())
-
-	var posts []bson.M
-	if err = cur.All(context.Background(), &posts); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Prepend full image URLs
-	for i := range posts {
-		if filename, ok := posts[i]["image"].(string); ok {
-			posts[i]["image_url"] = fmt.Sprintf("https://publicbackend-production.up.railway.app/uploads/%s", filename)
-		}
-	}
 
 	c.JSON(http.StatusOK, posts)
 }
+
 
