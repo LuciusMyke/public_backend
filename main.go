@@ -5,180 +5,180 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	socketio "github.com/googollee/go-socket.io"
+	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var postsColl *mongo.Collection
-var messagesColl *mongo.Collection
-
-// ✅ MongoDB connection
-func initMongo() *mongo.Client {
-	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI("YOUR_MONGODB_URI"))
-	if err != nil {
-		log.Fatal("Mongo connection error:", err)
-	}
-	return client
-}
-
-// ✅ Data models
 type Post struct {
-	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
-	Author    string             `bson:"author" json:"user"`
-	Content   string             `bson:"content" json:"caption"`
-	ImageURL  string             `bson:"imageURL" json:"photoUrl"`
-	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	User      string      `bson:"user" json:"user"`
+	Caption   string      `bson:"caption" json:"caption"`
+	PhotoURL  string      `bson:"photoUrl" json:"photoUrl"`
+	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
 type Message struct {
-	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
-	Sender    string             `bson:"sender" json:"sender"`
-	Text      string             `bson:"text" json:"message"`
-	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+	Username  string `json:"username"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
 }
 
-// ✅ Upload a post (from Tauri or React Native)
-func uploadPostHandler(c *gin.Context) {
-	var req struct {
-		User     string `json:"user"`
-		Caption  string `json:"caption"`
-		PhotoUrl string `json:"photoUrl"`
+var (
+	postsColl *mongo.Collection
+	client    *mongo.Client
+	upgrader  = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-		return
-	}
+	clients   = make(map[*websocket.Conn]bool)
+	broadcast = make(chan Message)
+	mu        sync.Mutex
+)
 
-	post := Post{
-		Author:    req.User,
-		Content:   req.Caption,
-		ImageURL:  req.PhotoUrl,
-		CreatedAt: time.Now(),
-	}
-
-	_, err := postsColl.InsertOne(context.Background(), post)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save post"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "post saved"})
-}
-
-// ✅ Fetch all posts
-func getPostsHandler(c *gin.Context) {
-	cursor, err := postsColl.Find(context.Background(), bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-		return
-	}
-	defer cursor.Close(context.Background())
-
-	var posts []Post
-	if err := cursor.All(context.Background(), &posts); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "parse error"})
-		return
-	}
-
-	c.JSON(http.StatusOK, posts)
-}
-
-// ✅ Chat message handlers
-func saveMessage(sender, text string) {
-	msg := Message{
-		Sender:    sender,
-		Text:      text,
-		CreatedAt: time.Now(),
-	}
-	_, _ = messagesColl.InsertOne(context.Background(), msg)
-}
-
-func getMessagesHandler(c *gin.Context) {
-	cursor, err := messagesColl.Find(context.Background(), bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-		return
-	}
-	defer cursor.Close(context.Background())
-
-	var messages []Message
-	if err := cursor.All(context.Background(), &messages); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "parse error"})
-		return
-	}
-
-	c.JSON(http.StatusOK, messages)
-}
-
-// ✅ Main function
 func main() {
-	client := initMongo()
-	db := client.Database("school_app")
-	postsColl = db.Collection("posts")
-	messagesColl = db.Collection("messages")
+	// Load environment variables
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found, continuing...")
+	}
 
+	mongoURI := os.Getenv("MONGO_URI")
+	dbName := os.Getenv("DB_NAME")
+	port := os.Getenv("PORT")
+
+	if mongoURI == "" {
+		log.Fatal("Missing MONGO_URI in .env")
+	}
+	if dbName == "" {
+		dbName = "mydb"
+	}
+	if port == "" {
+		port = "8080"
+	}
+
+	// Connect to MongoDB
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err = mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		log.Fatal(err)
+	}
+	postsColl = client.Database(dbName).Collection("posts")
+	log.Println("Connected to MongoDB:", dbName)
+
+	// Setup Gin
 	r := gin.Default()
 
-	// Enable CORS for mobile + desktop clients
+	// CORS
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
 	}))
 
-	// ✅ Socket.IO setup
-	server := socketio.NewServer(nil)
-
-	server.OnConnect("/", func(s socketio.Conn) error {
-		log.Println("Client connected:", s.ID())
-		return nil
-	})
-
-	server.OnEvent("/", "send_message", func(s socketio.Conn, msg map[string]string) {
-		sender := msg["sender"]
-		text := msg["message"]
-
-		saveMessage(sender, text)
-		server.BroadcastToNamespace("/", "receive_message", msg)
-	})
-
-	server.OnError("/", func(s socketio.Conn, e error) {
-		log.Println("Socket error:", e)
-	})
-
-	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		log.Println("Client disconnected:", reason)
-	})
-
-	go server.Serve()
-	defer server.Close()
-
-	// ✅ API routes
-	r.GET("/posts", getPostsHandler)
+	// Routes
 	r.POST("/uploadPost", uploadPostHandler)
+	r.GET("/posts", getPostsHandler)
+	r.GET("/ws", func(c *gin.Context) {
+		handleConnections(c.Writer, c.Request)
+	})
 
-	r.GET("/getMessages", getMessagesHandler)
+	go handleMessages()
 
-	// Attach Socket.IO
-	r.GET("/socket.io/*any", gin.WrapH(server))
-	r.POST("/socket.io/*any", gin.WrapH(server))
-
-	port := "8080"
-	log.Println("🚀 Server running on port", port)
+	// Start server
+	log.Println("Listening on :" + port)
 	if err := r.Run(":" + port); err != nil {
-		log.Fatal("Server error:", err)
+		log.Fatal("Server failed:", err)
 	}
 }
+
+// --- TIMELINE HANDLERS ---
+func uploadPostHandler(c *gin.Context) {
+	var p Post
+	if err := c.BindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	p.CreatedAt = time.Now().UTC()
+	_, err := postsColl.InsertOne(context.Background(), p)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"status": "ok"})
+}
+
+func getPostsHandler(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cur, err := postsColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}).SetLimit(100))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	defer cur.Close(ctx)
+
+	var posts []Post
+	if err := cur.All(ctx, &posts); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
 
 	c.JSON(http.StatusOK, posts)
 }
 
+// --- CHAT HANDLERS ---
+func handleConnections(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("WebSocket Upgrade Error:", err)
+		return
+	}
+	defer ws.Close()
 
+	mu.Lock()
+	clients[ws] = true
+	mu.Unlock()
+
+	for {
+		var msg Message
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			log.Println("WebSocket Read Error:", err)
+			mu.Lock()
+			delete(clients, ws)
+			mu.Unlock()
+			break
+		}
+		msg.Timestamp = time.Now().Format("15:04:05")
+		broadcast <- msg
+	}
+}
+
+func handleMessages() {
+	for {
+		msg := <-broadcast
+		mu.Lock()
+		for client := range clients {
+			err := client.WriteJSON(msg)
+			if err != nil {
+				log.Println("WebSocket Write Error:", err)
+				client.Close()
+				delete(clients, client)
+			}
+		}
+		mu.Unlock()
+	}
+}
