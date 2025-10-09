@@ -19,12 +19,13 @@ import (
 )
 
 type Post struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	User      string      `bson:"user" json:"user"`
-	Caption   string      `bson:"caption" json:"caption"`
-	PhotoURL  string      `bson:"photoUrl" json:"photoUrl"`
-	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	User      string             `bson:"user" json:"user"`
+	Caption   string             `bson:"caption" json:"caption"`
+	PhotoURL  string             `bson:"photoUrl" json:"photoUrl"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
 }
+
 
 type Message struct {
 	Username  string `json:"username"`
@@ -103,21 +104,22 @@ func main() {
 
 // --- TIMELINE HANDLERS ---
 func uploadPostHandler(c *gin.Context) {
-	var p Post
-	if err := c.BindJSON(&p); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	var post Post
+	if err := c.BindJSON(&post); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	post.CreatedAt = time.Now().UTC()
 
-	p.CreatedAt = time.Now().UTC()
-	_, err := postsColl.InsertOne(context.Background(), p)
+	_, err := postsColl.InsertOne(context.Background(), post)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save post"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
+
 
 func getPostsHandler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -182,3 +184,4 @@ func handleMessages() {
 		mu.Unlock()
 	}
 }
+
