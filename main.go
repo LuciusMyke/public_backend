@@ -1,3 +1,5 @@
+//go:generate go get github.com/gin-gonic/gin github.com/gin-contrib/cors github.com/googollee/go-socket.io
+
 package main
 
 import (
@@ -171,3 +173,4 @@ func getPostsHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, posts)
 }
+
