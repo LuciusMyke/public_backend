@@ -214,22 +214,31 @@ func getModulesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var m Module
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	m.CreatedAt = time.Now()
-	_, err := modulesColl.InsertOne(r.Context(), m)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+    if r.Method != http.MethodPost {
+        http.Error(w, "POST only", http.StatusMethodNotAllowed)
+        return
+    }
+
+    var m Module
+    if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+        log.Println("JSON decode error:", err)
+        http.Error(w, "invalid body", http.StatusBadRequest)
+        return
+    }
+
+    m.CreatedAt = time.Now()
+
+    res, err := modulesColl.InsertOne(r.Context(), m)
+    if err != nil {
+        log.Println("Mongo insert error:", err)
+        http.Error(w, "db error", http.StatusInternalServerError)
+        return
+    }
+
+    log.Println("Module inserted ID:", res.InsertedID)
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
+
+
 
