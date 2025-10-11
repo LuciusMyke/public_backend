@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -12,9 +14,13 @@ import (
 	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// -------------------- STRUCTS --------------------
 
 type Post struct {
 	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
@@ -40,7 +46,12 @@ type Module struct {
 	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
+// -------------------- GLOBALS --------------------
+
+var db *mongo.Database
 var postsColl, messagesColl, modulesColl *mongo.Collection
+
+// -------------------- MAIN --------------------
 
 func main() {
 	_ = godotenv.Load()
@@ -59,20 +70,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	db := client.Database(dbName)
+	db = client.Database(dbName)
 	postsColl = db.Collection("posts")
 	messagesColl = db.Collection("messages")
 	modulesColl = db.Collection("modules")
-	log.Println("Connected to MongoDB:", dbName)
 
-	// Socket.io for chat
+	log.Println("✅ Connected to MongoDB:", dbName)
+
+	// Socket.io setup
 	server := socketio.NewServer(nil)
 	server.OnConnect("/", func(s socketio.Conn) error {
 		log.Println("New connection:", s.ID())
 		s.Join("global")
 		return nil
 	})
-
 	server.OnEvent("/", "send_message", func(s socketio.Conn, msg Message) {
 		msg.CreatedAt = time.Now()
 		_, err := messagesColl.InsertOne(context.Background(), msg)
@@ -80,18 +91,16 @@ func main() {
 			log.Println("DB insert error:", err)
 			return
 		}
-		// broadcast
 		server.BroadcastToRoom("/", "global", "receive_message", msg)
 	})
-
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
 		log.Println("Disconnected:", s.ID(), reason)
 	})
-
 	go server.Serve()
 	defer server.Close()
 
-	// Routes
+	// -------------------- ROUTES --------------------
+
 	http.HandleFunc("/posts", cors(getPostsHandler))
 	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
 
@@ -100,14 +109,16 @@ func main() {
 
 	http.HandleFunc("/modules", cors(getModulesHandler))
 	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
+	http.HandleFunc("/file/", cors(serveFileHandler)) // 🔥 serve file from MongoDB
 
 	http.Handle("/socket.io/", server)
 
-	log.Println("Server listening on port:", port)
+	log.Println("🚀 Server running on port:", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 // -------------------- CORS --------------------
+
 func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -121,6 +132,7 @@ func cors(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // -------------------- POSTS --------------------
+
 func getPostsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -159,6 +171,7 @@ func uploadPostHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // -------------------- CHAT --------------------
+
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -195,44 +208,109 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// -------------------- MODULES --------------------
-func getModulesHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	cur, err := modulesColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}))
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(ctx)
-	var modules []Module
-	if err := cur.All(ctx, &modules); err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(modules)
-}
+// -------------------- MODULES (with GridFS) --------------------
 
+// uploadModuleHandler stores the file in MongoDB (GridFS)
 func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	var m Module
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	m.CreatedAt = time.Now()
-	_, err := modulesColl.InsertOne(r.Context(), m)
+
+	err := r.ParseMultipartForm(10 << 20) // 10 MB max
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
 		return
 	}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	title := r.FormValue("title")
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "File missing", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Upload file to GridFS
+	bucket, err := gridfs.NewBucket(db)
+	if err != nil {
+		http.Error(w, "GridFS error", http.StatusInternalServerError)
+		return
+	}
+
+	uploadStream, err := bucket.OpenUploadStream(header.Filename)
+	if err != nil {
+		http.Error(w, "Upload stream error", http.StatusInternalServerError)
+		return
+	}
+	defer uploadStream.Close()
+
+	_, err = io.Copy(uploadStream, file)
+	if err != nil {
+		http.Error(w, "File upload failed", http.StatusInternalServerError)
+		return
+	}
+
+	fileID := uploadStream.FileID.(primitive.ObjectID)
+	fileURL := fmt.Sprintf("http://%s/file/%s", r.Host, fileID.Hex())
+
+	module := Module{
+		Title:     title,
+		FileName:  header.Filename,
+		FileURL:   fileURL,
+		FileType:  header.Header.Get("Content-Type"),
+		CreatedAt: time.Now(),
+	}
+
+	_, err = modulesColl.InsertOne(r.Context(), module)
+	if err != nil {
+		http.Error(w, "DB insert error", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "fileUrl": fileURL})
 }
 
+// getModulesHandler returns list of uploaded modules
+func getModulesHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
+	cur, err := modulesColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}))
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(ctx)
 
+	var modules []Module
+	if err := cur.All(ctx, &modules); err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
 
+	json.NewEncoder(w).Encode(modules)
+}
+
+// serveFileHandler allows React Native to access the uploaded file
+func serveFileHandler(w http.ResponseWriter, r *http.Request) {
+	idHex := r.URL.Path[len("/file/"):]
+	objID, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		return
+	}
+
+	bucket, _ := gridfs.NewBucket(db)
+	stream, err := bucket.OpenDownloadStream(objID)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	defer stream.Close()
+
+	fileInfo := stream.GetFile()
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", fileInfo.Name))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	io.Copy(w, stream)
+}
