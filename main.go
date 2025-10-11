@@ -252,7 +252,8 @@ func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileID := uploadStream.FileID.(primitive.ObjectID)
-	fileURL := fmt.Sprintf("http://%s/file/%s", r.Host, fileID.Hex())
+	fileURL := fmt.Sprintf("https://publicbackend-production.up.railway.app/file/%s", fileID.Hex())
+
 
 	module := Module{
 		Title:     title,
@@ -314,3 +315,4 @@ func serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	io.Copy(w, stream)
 }
+
