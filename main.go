@@ -46,10 +46,39 @@ type Module struct {
 	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
+type Evaluation struct {
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID string      `bson:"studentId" json:"studentId"`
+	Age       string      `bson:"age" json:"age"`
+
+	GrossMotorB int `bson:"grossMotorB" json:"grossMotorB"`
+	GrossMotorE int `bson:"grossMotorE" json:"grossMotorE"`
+
+	FineMotorB int `bson:"fineMotorB" json:"fineMotorB"`
+	FineMotorE int `bson:"fineMotorE" json:"fineMotorE"`
+
+	SelfHelpB int `bson:"selfHelpB" json:"selfHelpB"`
+	SelfHelpE int `bson:"selfHelpE" json:"selfHelpE"`
+
+	ReceptiveB int `bson:"receptiveB" json:"receptiveB"`
+	ReceptiveE int `bson:"receptiveE" json:"receptiveE"`
+
+	ExpressiveB int `bson:"expressiveB" json:"expressiveB"`
+	ExpressiveE int `bson:"expressiveE" json:"expressiveE"`
+
+	CognitiveB int `bson:"cognitiveB" json:"cognitiveB"`
+	CognitiveE int `bson:"cognitiveE" json:"cognitiveE"`
+
+	SocialB int `bson:"socialB" json:"socialB"`
+	SocialE int `bson:"socialE" json:"socialE"`
+
+	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
+}
+
 // -------------------- GLOBALS --------------------
 
 var db *mongo.Database
-var postsColl, messagesColl, modulesColl *mongo.Collection
+var postsColl, messagesColl, modulesColl, evalColl *mongo.Collection
 
 // -------------------- MAIN --------------------
 
@@ -62,7 +91,6 @@ func main() {
 		port = "8084"
 	}
 
-	// MongoDB connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
@@ -74,10 +102,11 @@ func main() {
 	postsColl = db.Collection("posts")
 	messagesColl = db.Collection("messages")
 	modulesColl = db.Collection("modules")
+	evalColl = db.Collection("evaluations")
 
 	log.Println("✅ Connected to MongoDB:", dbName)
 
-	// Socket.io setup
+	// -------------------- SOCKET.IO --------------------
 	server := socketio.NewServer(nil)
 	server.OnConnect("/", func(s socketio.Conn) error {
 		log.Println("New connection:", s.ID())
@@ -100,7 +129,6 @@ func main() {
 	defer server.Close()
 
 	// -------------------- ROUTES --------------------
-
 	http.HandleFunc("/posts", cors(getPostsHandler))
 	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
 
@@ -109,7 +137,10 @@ func main() {
 
 	http.HandleFunc("/modules", cors(getModulesHandler))
 	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
-	http.HandleFunc("/file/", cors(serveFileHandler)) // 🔥 serve file from MongoDB
+	http.HandleFunc("/file/", cors(serveFileHandler))
+
+	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
+	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
 
 	http.Handle("/socket.io/", server)
 
@@ -166,7 +197,6 @@ func uploadPostHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
@@ -208,30 +238,28 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// -------------------- MODULES (with GridFS) --------------------
+// -------------------- MODULES (GridFS) --------------------
 
-// uploadModuleHandler stores the file in MongoDB (GridFS)
 func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 
-	err := r.ParseMultipartForm(10 << 20) // 10 MB max
+	err := r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
 
 	title := r.FormValue("title")
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "File missing", http.StatusBadRequest)
+		http.Error(w, "file missing", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 
-	// Upload file to GridFS
 	bucket, err := gridfs.NewBucket(db)
 	if err != nil {
 		http.Error(w, "GridFS error", http.StatusInternalServerError)
@@ -254,7 +282,6 @@ func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 	fileID := uploadStream.FileID.(primitive.ObjectID)
 	fileURL := fmt.Sprintf("https://publicbackend-production.up.railway.app/file/%s", fileID.Hex())
 
-
 	module := Module{
 		Title:     title,
 		FileName:  header.Filename,
@@ -272,7 +299,6 @@ func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "fileUrl": fileURL})
 }
 
-// getModulesHandler returns list of uploaded modules
 func getModulesHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -293,12 +319,11 @@ func getModulesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(modules)
 }
 
-// serveFileHandler allows React Native to access the uploaded file
 func serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	idHex := r.URL.Path[len("/file/"):]
 	objID, err := primitive.ObjectIDFromHex(idHex)
 	if err != nil {
-		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		http.Error(w, "invalid file ID", http.StatusBadRequest)
 		return
 	}
 
@@ -316,3 +341,51 @@ func serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, stream)
 }
 
+// -------------------- EVALUATIONS --------------------
+
+func addEvaluationHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var eval Evaluation
+	if err := json.NewDecoder(r.Body).Decode(&eval); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	eval.CreatedAt = time.Now()
+
+	_, err := evalColl.InsertOne(r.Context(), eval)
+	if err != nil {
+		http.Error(w, "DB insert error", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
+	studentID := r.URL.Path[len("/evaluations/"):]
+	if studentID == "" {
+		http.Error(w, "studentId missing", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	cur, err := evalColl.Find(ctx, bson.M{"studentId": studentID})
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(ctx)
+
+	var evals []Evaluation
+	if err := cur.All(ctx, &evals); err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(evals)
+}
