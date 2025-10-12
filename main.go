@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	socketio "github.com/googollee/go-socket.io"
@@ -31,12 +32,10 @@ type Post struct {
 }
 
 type Message struct {
-	Sender      string    `bson:"sender" json:"sender"`
-	Receiver    string    `bson:"receiver" json:"receiver"`
-	StudentID   string    `bson:"studentId" json:"studentId"`
-	StudentName string    `bson:"studentName" json:"studentName"`
-	Message     string    `bson:"message" json:"message"`
-	CreatedAt   time.Time `bson:"createdAt" json:"createdAt"`
+	Sender    string    `bson:"sender" json:"sender"`
+	Receiver  string    `bson:"receiver" json:"receiver"`
+	Message   string    `bson:"message" json:"message"`
+	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
 }
 
 type Module struct {
@@ -49,32 +48,24 @@ type Module struct {
 }
 
 type Evaluation struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID string      `bson:"studentId" json:"studentId"`
-	Age       string      `bson:"age" json:"age"`
-
-	GrossMotorB int `bson:"grossMotorB" json:"grossMotorB"`
-	GrossMotorE int `bson:"grossMotorE" json:"grossMotorE"`
-
-	FineMotorB int `bson:"fineMotorB" json:"fineMotorB"`
-	FineMotorE int `bson:"fineMotorE" json:"fineMotorE"`
-
-	SelfHelpB int `bson:"selfHelpB" json:"selfHelpB"`
-	SelfHelpE int `bson:"selfHelpE" json:"selfHelpE"`
-
-	ReceptiveB int `bson:"receptiveB" json:"receptiveB"`
-	ReceptiveE int `bson:"receptiveE" json:"receptiveE"`
-
-	ExpressiveB int `bson:"expressiveB" json:"expressiveB"`
-	ExpressiveE int `bson:"expressiveE" json:"expressiveE"`
-
-	CognitiveB int `bson:"cognitiveB" json:"cognitiveB"`
-	CognitiveE int `bson:"cognitiveE" json:"cognitiveE"`
-
-	SocialB int `bson:"socialB" json:"socialB"`
-	SocialE int `bson:"socialE" json:"socialE"`
-
-	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
+	ID          interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID   string      `bson:"studentId" json:"studentId"`
+	Age         string      `bson:"age" json:"age"`
+	GrossMotorB int         `bson:"grossMotorB" json:"grossMotorB"`
+	GrossMotorE int         `bson:"grossMotorE" json:"grossMotorE"`
+	FineMotorB  int         `bson:"fineMotorB" json:"fineMotorB"`
+	FineMotorE  int         `bson:"fineMotorE" json:"fineMotorE"`
+	SelfHelpB   int         `bson:"selfHelpB" json:"selfHelpB"`
+	SelfHelpE   int         `bson:"selfHelpE" json:"selfHelpE"`
+	ReceptiveB  int         `bson:"receptiveB" json:"receptiveB"`
+	ReceptiveE  int         `bson:"receptiveE" json:"receptiveE"`
+	ExpressiveB int         `bson:"expressiveB" json:"expressiveB"`
+	ExpressiveE int         `bson:"expressiveE" json:"expressiveE"`
+	CognitiveB  int         `bson:"cognitiveB" json:"cognitiveB"`
+	CognitiveE  int         `bson:"cognitiveE" json:"cognitiveE"`
+	SocialB     int         `bson:"socialB" json:"socialB"`
+	SocialE     int         `bson:"socialE" json:"socialE"`
+	CreatedAt   time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
 // -------------------- GLOBALS --------------------
@@ -82,8 +73,9 @@ type Evaluation struct {
 var db *mongo.Database
 var postsColl, messagesColl, modulesColl, evalColl *mongo.Collection
 
-// Track active admin sockets
-var activeAdminSockets = map[string]time.Time{}
+// Track online users
+var activeUsers = make(map[string]string) // socketID -> username
+var mu sync.Mutex
 
 // -------------------- MAIN --------------------
 
@@ -98,11 +90,11 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	db = client.Database(dbName)
 	postsColl = db.Collection("posts")
 	messagesColl = db.Collection("messages")
@@ -115,38 +107,35 @@ func main() {
 	server := socketio.NewServer(nil)
 
 	server.OnConnect("/", func(s socketio.Conn) error {
-		log.Println("New connection:", s.ID())
+		log.Println("🟢 New connection:", s.ID())
 		return nil
 	})
 
-	// Admin active event
-	server.OnEvent("/", "admin_active", func(s socketio.Conn) {
-		s.Join("global")
-		activeAdminSockets[s.ID()] = time.Now()
-		log.Println("✅ Admin active:", s.ID())
+	server.OnEvent("/", "user_online", func(s socketio.Conn, username string) {
+		mu.Lock()
+		activeUsers[s.ID()] = username
+		mu.Unlock()
+		server.BroadcastToRoom("/", "", "active_users", getActiveUserList())
+		log.Println("👤", username, "is online")
 	})
 
-	// Optional heartbeat
-	server.OnEvent("/", "admin_heartbeat", func(s socketio.Conn) {
-		if _, ok := activeAdminSockets[s.ID()]; ok {
-			activeAdminSockets[s.ID()] = time.Now()
-		}
-	})
-
-	// Send message
 	server.OnEvent("/", "send_message", func(s socketio.Conn, msg Message) {
 		msg.CreatedAt = time.Now()
 		_, err := messagesColl.InsertOne(context.Background(), msg)
 		if err != nil {
-			log.Println("DB insert error:", err)
+			log.Println("❌ DB insert error:", err)
 			return
 		}
-		server.BroadcastToRoom("/", "global", "receive_message", msg)
+		server.BroadcastToRoom("/", "", "receive_message", msg)
 	})
 
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		delete(activeAdminSockets, s.ID())
-		log.Println("Disconnected:", s.ID(), reason)
+		mu.Lock()
+		username := activeUsers[s.ID()]
+		delete(activeUsers, s.ID())
+		mu.Unlock()
+		server.BroadcastToRoom("/", "", "active_users", getActiveUserList())
+		log.Println("🔴", username, "disconnected:", reason)
 	})
 
 	go server.Serve()
@@ -155,35 +144,33 @@ func main() {
 	// -------------------- ROUTES --------------------
 	http.HandleFunc("/posts", cors(getPostsHandler))
 	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
+
 	http.HandleFunc("/getMessages", cors(getMessagesHandler))
 	http.HandleFunc("/sendMessage", cors(sendMessageHandler))
+
 	http.HandleFunc("/modules", cors(getModulesHandler))
 	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
 	http.HandleFunc("/file/", cors(serveFileHandler))
+
 	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
 	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
-
-	// ✅ New endpoint to check admin online status
-	http.HandleFunc("/adminStatus", cors(func(w http.ResponseWriter, r *http.Request) {
-		now := time.Now()
-		online := false
-		for _, last := range activeAdminSockets {
-			if now.Sub(last) < 20*time.Second {
-				online = true
-				break
-			}
-		}
-		status := "offline"
-		if online {
-			status = "online"
-		}
-		json.NewEncoder(w).Encode(map[string]string{"status": status})
-	}))
 
 	http.Handle("/socket.io/", server)
 
 	log.Println("🚀 Server running on port:", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+// -------------------- UTILS --------------------
+
+func getActiveUserList() []string {
+	mu.Lock()
+	defer mu.Unlock()
+	users := []string{}
+	for _, u := range activeUsers {
+		users = append(users, u)
+	}
+	return users
 }
 
 // -------------------- CORS --------------------
