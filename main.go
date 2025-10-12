@@ -23,56 +23,56 @@ import (
 // -------------------- STRUCTS --------------------
 
 type Post struct {
-	ID        interface{} bson:"_id,omitempty" json:"_id,omitempty"
-	User      string      bson:"user" json:"user"
-	Caption   string      bson:"caption" json:"caption"
-	PhotoURL  string      bson:"photoUrl" json:"photoUrl"
-	CreatedAt time.Time   bson:"createdAt" json:"createdAt"
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	User      string      `bson:"user" json:"user"`
+	Caption   string      `bson:"caption" json:"caption"`
+	PhotoURL  string      `bson:"photoUrl" json:"photoUrl"`
+	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
 type Message struct {
-	Sender    string    bson:"sender" json:"sender"
-	Receiver  string    bson:"receiver" json:"receiver"
-	Message   string    bson:"message" json:"message"
-	CreatedAt time.Time bson:"createdAt" json:"createdAt"
+	Sender    string    `bson:"sender" json:"sender"`
+	Receiver  string    `bson:"receiver" json:"receiver"`
+	Message   string    `bson:"message" json:"message"`
+	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
 }
 
 type Module struct {
-	ID        interface{} bson:"_id,omitempty" json:"_id,omitempty"
-	Title     string      bson:"title" json:"title"
-	FileName  string      bson:"fileName" json:"fileName"
-	FileURL   string      bson:"fileUrl" json:"fileUrl"
-	FileType  string      bson:"fileType" json:"fileType"
-	CreatedAt time.Time   bson:"createdAt" json:"createdAt"
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	Title     string      `bson:"title" json:"title"`
+	FileName  string      `bson:"fileName" json:"fileName"`
+	FileURL   string      `bson:"fileUrl" json:"fileUrl"`
+	FileType  string      `bson:"fileType" json:"fileType"`
+	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
 type Evaluation struct {
-	ID        interface{} bson:"_id,omitempty" json:"_id,omitempty"
-	StudentID string      bson:"studentId" json:"studentId"
-	Age       string      bson:"age" json:"age"
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID string      `bson:"studentId" json:"studentId"`
+	Age       string      `bson:"age" json:"age"`
 
-	GrossMotorB int bson:"grossMotorB" json:"grossMotorB"
-	GrossMotorE int bson:"grossMotorE" json:"grossMotorE"
+	GrossMotorB int `bson:"grossMotorB" json:"grossMotorB"`
+	GrossMotorE int `bson:"grossMotorE" json:"grossMotorE"`
 
-	FineMotorB int bson:"fineMotorB" json:"fineMotorB"
-	FineMotorE int bson:"fineMotorE" json:"fineMotorE"
+	FineMotorB int `bson:"fineMotorB" json:"fineMotorB"`
+	FineMotorE int `bson:"fineMotorE" json:"fineMotorE"`
 
-	SelfHelpB int bson:"selfHelpB" json:"selfHelpB"
-	SelfHelpE int bson:"selfHelpE" json:"selfHelpE"
+	SelfHelpB int `bson:"selfHelpB" json:"selfHelpB"`
+	SelfHelpE int `bson:"selfHelpE" json:"selfHelpE"`
 
-	ReceptiveB int bson:"receptiveB" json:"receptiveB"
-	ReceptiveE int bson:"receptiveE" json:"receptiveE"
+	ReceptiveB int `bson:"receptiveB" json:"receptiveB"`
+	ReceptiveE int `bson:"receptiveE" json:"receptiveE"`
 
-	ExpressiveB int bson:"expressiveB" json:"expressiveB"
-	ExpressiveE int bson:"expressiveE" json:"expressiveE"
+	ExpressiveB int `bson:"expressiveB" json:"expressiveB"`
+	ExpressiveE int `bson:"expressiveE" json:"expressiveE"`
 
-	CognitiveB int bson:"cognitiveB" json:"cognitiveB"
-	CognitiveE int bson:"cognitiveE" json:"cognitiveE"
+	CognitiveB int `bson:"cognitiveB" json:"cognitiveB"`
+	CognitiveE int `bson:"cognitiveE" json:"cognitiveE"`
 
-	SocialB int bson:"socialB" json:"socialB"
-	SocialE int bson:"socialE" json:"socialE"
+	SocialB int `bson:"socialB" json:"socialB"`
+	SocialE int `bson:"socialE" json:"socialE"`
 
-	CreatedAt time.Time bson:"createdAt" json:"createdAt"
+	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
 }
 
 // -------------------- GLOBALS --------------------
@@ -236,156 +236,4 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-// -------------------- MODULES (GridFS) --------------------
-
-func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-
-	err := r.ParseMultipartForm(10 << 20)
-	if err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-
-	title := r.FormValue("title")
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "file missing", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	bucket, err := gridfs.NewBucket(db)
-	if err != nil {
-		http.Error(w, "GridFS error", http.StatusInternalServerError)
-		return
-	}
-
-	uploadStream, err := bucket.OpenUploadStream(header.Filename)
-	if err != nil {
-		http.Error(w, "Upload stream error", http.StatusInternalServerError)
-		return
-	}
-	defer uploadStream.Close()
-
-	_, err = io.Copy(uploadStream, file)
-	if err != nil {
-		http.Error(w, "File upload failed", http.StatusInternalServerError)
-		return
-	}
-
-	fileID := uploadStream.FileID.(primitive.ObjectID)
-	fileURL := fmt.Sprintf("https://publicbackend-production.up.railway.app/file/%s", fileID.Hex())
-
-	module := Module{
-		Title:     title,
-		FileName:  header.Filename,
-		FileURL:   fileURL,
-		FileType:  header.Header.Get("Content-Type"),
-		CreatedAt: time.Now(),
-	}
-
-	_, err = modulesColl.InsertOne(r.Context(), module)
-	if err != nil {
-		http.Error(w, "DB insert error", http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "fileUrl": fileURL})
-}
-
-func getModulesHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	cur, err := modulesColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}))
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(ctx)
-
-	var modules []Module
-	if err := cur.All(ctx, &modules); err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(modules)
-}
-
-func serveFileHandler(w http.ResponseWriter, r *http.Request) {
-	idHex := r.URL.Path[len("/file/"):]
-	objID, err := primitive.ObjectIDFromHex(idHex)
-	if err != nil {
-		http.Error(w, "invalid file ID", http.StatusBadRequest)
-		return
-	}
-
-	bucket, _ := gridfs.NewBucket(db)
-	stream, err := bucket.OpenDownloadStream(objID)
-	if err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
-	defer stream.Close()
-
-	fileInfo := stream.GetFile()
-	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", fileInfo.Name))
-	w.Header().Set("Content-Type", "application/octet-stream")
-	io.Copy(w, stream)
-}
-
-// -------------------- EVALUATIONS --------------------
-
-func addEvaluationHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var eval Evaluation
-	if err := json.NewDecoder(r.Body).Decode(&eval); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	eval.CreatedAt = time.Now()
-
-	_, err := evalColl.InsertOne(r.Context(), eval)
-	if err != nil {
-		http.Error(w, "DB insert error", http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
-	studentID := r.URL.Path[len("/evaluations/"):]
-	if studentID == "" {
-		http.Error(w, "studentId missing", http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	cur, err := evalColl.Find(ctx, bson.M{"studentId": studentID})
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(ctx)
-
-	var evals []Evaluation
-	if err := cur.All(ctx, &evals); err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(evals)
 }
