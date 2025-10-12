@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	socketio "github.com/googollee/go-socket.io"
@@ -24,58 +23,62 @@ import (
 // -------------------- STRUCTS --------------------
 
 type Post struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	User      string      `bson:"user" json:"user"`
-	Caption   string      `bson:"caption" json:"caption"`
-	PhotoURL  string      `bson:"photoUrl" json:"photoUrl"`
-	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
+	ID        interface{} bson:"_id,omitempty" json:"_id,omitempty"
+	User      string      bson:"user" json:"user"
+	Caption   string      bson:"caption" json:"caption"
+	PhotoURL  string      bson:"photoUrl" json:"photoUrl"
+	CreatedAt time.Time   bson:"createdAt" json:"createdAt"
 }
 
 type Message struct {
-	Sender    string    `bson:"sender" json:"sender"`
-	Receiver  string    `bson:"receiver" json:"receiver"`
-	Message   string    `bson:"message" json:"message"`
-	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
+	Sender    string    bson:"sender" json:"sender"
+	Receiver  string    bson:"receiver" json:"receiver"
+	Message   string    bson:"message" json:"message"
+	CreatedAt time.Time bson:"createdAt" json:"createdAt"
 }
 
 type Module struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	Title     string      `bson:"title" json:"title"`
-	FileName  string      `bson:"fileName" json:"fileName"`
-	FileURL   string      `bson:"fileUrl" json:"fileUrl"`
-	FileType  string      `bson:"fileType" json:"fileType"`
-	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
+	ID        interface{} bson:"_id,omitempty" json:"_id,omitempty"
+	Title     string      bson:"title" json:"title"
+	FileName  string      bson:"fileName" json:"fileName"
+	FileURL   string      bson:"fileUrl" json:"fileUrl"
+	FileType  string      bson:"fileType" json:"fileType"
+	CreatedAt time.Time   bson:"createdAt" json:"createdAt"
 }
 
 type Evaluation struct {
-	ID          interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID   string      `bson:"studentId" json:"studentId"`
-	Age         string      `bson:"age" json:"age"`
-	GrossMotorB int         `bson:"grossMotorB" json:"grossMotorB"`
-	GrossMotorE int         `bson:"grossMotorE" json:"grossMotorE"`
-	FineMotorB  int         `bson:"fineMotorB" json:"fineMotorB"`
-	FineMotorE  int         `bson:"fineMotorE" json:"fineMotorE"`
-	SelfHelpB   int         `bson:"selfHelpB" json:"selfHelpB"`
-	SelfHelpE   int         `bson:"selfHelpE" json:"selfHelpE"`
-	ReceptiveB  int         `bson:"receptiveB" json:"receptiveB"`
-	ReceptiveE  int         `bson:"receptiveE" json:"receptiveE"`
-	ExpressiveB int         `bson:"expressiveB" json:"expressiveB"`
-	ExpressiveE int         `bson:"expressiveE" json:"expressiveE"`
-	CognitiveB  int         `bson:"cognitiveB" json:"cognitiveB"`
-	CognitiveE  int         `bson:"cognitiveE" json:"cognitiveE"`
-	SocialB     int         `bson:"socialB" json:"socialB"`
-	SocialE     int         `bson:"socialE" json:"socialE"`
-	CreatedAt   time.Time   `bson:"createdAt" json:"createdAt"`
+	ID        interface{} bson:"_id,omitempty" json:"_id,omitempty"
+	StudentID string      bson:"studentId" json:"studentId"
+	Age       string      bson:"age" json:"age"
+
+	GrossMotorB int bson:"grossMotorB" json:"grossMotorB"
+	GrossMotorE int bson:"grossMotorE" json:"grossMotorE"
+
+	FineMotorB int bson:"fineMotorB" json:"fineMotorB"
+	FineMotorE int bson:"fineMotorE" json:"fineMotorE"
+
+	SelfHelpB int bson:"selfHelpB" json:"selfHelpB"
+	SelfHelpE int bson:"selfHelpE" json:"selfHelpE"
+
+	ReceptiveB int bson:"receptiveB" json:"receptiveB"
+	ReceptiveE int bson:"receptiveE" json:"receptiveE"
+
+	ExpressiveB int bson:"expressiveB" json:"expressiveB"
+	ExpressiveE int bson:"expressiveE" json:"expressiveE"
+
+	CognitiveB int bson:"cognitiveB" json:"cognitiveB"
+	CognitiveE int bson:"cognitiveE" json:"cognitiveE"
+
+	SocialB int bson:"socialB" json:"socialB"
+	SocialE int bson:"socialE" json:"socialE"
+
+	CreatedAt time.Time bson:"createdAt" json:"createdAt"
 }
 
 // -------------------- GLOBALS --------------------
 
 var db *mongo.Database
 var postsColl, messagesColl, modulesColl, evalColl *mongo.Collection
-
-// Track online users
-var activeUsers = make(map[string]string) // socketID -> username
-var mu sync.Mutex
 
 // -------------------- MAIN --------------------
 
@@ -90,11 +93,11 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	db = client.Database(dbName)
 	postsColl = db.Collection("posts")
 	messagesColl = db.Collection("messages")
@@ -105,39 +108,23 @@ func main() {
 
 	// -------------------- SOCKET.IO --------------------
 	server := socketio.NewServer(nil)
-
 	server.OnConnect("/", func(s socketio.Conn) error {
-		log.Println("🟢 New connection:", s.ID())
+		log.Println("New connection:", s.ID())
+		s.Join("global")
 		return nil
 	})
-
-	server.OnEvent("/", "user_online", func(s socketio.Conn, username string) {
-		mu.Lock()
-		activeUsers[s.ID()] = username
-		mu.Unlock()
-		server.BroadcastToRoom("/", "", "active_users", getActiveUserList())
-		log.Println("👤", username, "is online")
-	})
-
 	server.OnEvent("/", "send_message", func(s socketio.Conn, msg Message) {
 		msg.CreatedAt = time.Now()
 		_, err := messagesColl.InsertOne(context.Background(), msg)
 		if err != nil {
-			log.Println("❌ DB insert error:", err)
+			log.Println("DB insert error:", err)
 			return
 		}
-		server.BroadcastToRoom("/", "", "receive_message", msg)
+		server.BroadcastToRoom("/", "global", "receive_message", msg)
 	})
-
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		mu.Lock()
-		username := activeUsers[s.ID()]
-		delete(activeUsers, s.ID())
-		mu.Unlock()
-		server.BroadcastToRoom("/", "", "active_users", getActiveUserList())
-		log.Println("🔴", username, "disconnected:", reason)
+		log.Println("Disconnected:", s.ID(), reason)
 	})
-
 	go server.Serve()
 	defer server.Close()
 
@@ -159,18 +146,6 @@ func main() {
 
 	log.Println("🚀 Server running on port:", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
-}
-
-// -------------------- UTILS --------------------
-
-func getActiveUserList() []string {
-	mu.Lock()
-	defer mu.Unlock()
-	users := []string{}
-	for _, u := range activeUsers {
-		users = append(users, u)
-	}
-	return users
 }
 
 // -------------------- CORS --------------------
