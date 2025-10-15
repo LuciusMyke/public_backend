@@ -1,16 +1,14 @@
-//go:generate go get github.com/gin-gonic/gin github.com/gin-contrib/cors github.com/googollee/go-socket.io
+//go:generate go get github.com/gin-gonic/gin github.com/gin-contrib/cors
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
-	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -42,11 +40,16 @@ type Module struct {
 }
 
 type Evaluation struct {
-	ID        interface{}                                  `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID string                                       `bson:"studentId" json:"studentId"`
-	Age       string                                       `bson:"age" json:"age"`
-	Scores    map[string]map[int]struct{ B int; E int }    `bson:"scores" json:"scores"`
-	CreatedAt time.Time                                    `bson:"createdAt" json:"createdAt"`
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID string      `bson:"studentId" json:"studentId"`
+	Age       string      `bson:"age" json:"age"`
+	GrossB    int         `bson:"grossB" json:"grossB"`
+	GrossE    int         `bson:"grossE" json:"grossE"`
+	FineB     int         `bson:"fineB" json:"fineB"`
+	FineE     int         `bson:"fineE" json:"fineE"`
+	SocialB   int         `bson:"socialB" json:"socialB"`
+	SocialE   int         `bson:"socialE" json:"socialE"`
+	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
 // ===== GLOBALS =====
@@ -165,11 +168,6 @@ func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// Serve static file uploads
-func serveFileHandler(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "."+r.URL.Path)
-}
-
 // ===== EVALUATIONS =====
 func addEvaluationHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -184,9 +182,6 @@ func addEvaluationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eval.CreatedAt = time.Now()
-	if eval.Scores == nil {
-		eval.Scores = make(map[string]map[int]struct{ B, E int })
-	}
 
 	_, err := evalColl.InsertOne(r.Context(), eval)
 	if err != nil {
@@ -227,7 +222,7 @@ func main() {
 	_ = godotenv.Load()
 	mongoURI := os.Getenv("MONGO_URI")
 	if mongoURI == "" {
-		mongoURI = "mongodb+srv://<your_connection_string>"
+		mongoURI = "mongodb+srv://admin_mike:mike_admin10203@cluster0.8yqjlfb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -246,7 +241,6 @@ func main() {
 	http.HandleFunc("/sendMessage", cors(sendMessageHandler))
 	http.HandleFunc("/modules", cors(getModulesHandler))
 	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
-	http.HandleFunc("/files/", cors(serveFileHandler))
 	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
 	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
 
