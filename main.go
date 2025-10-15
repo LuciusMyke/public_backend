@@ -14,7 +14,6 @@ import (
 	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -59,10 +58,6 @@ type Evaluation struct {
 	SelfHelpE   int `bson:"selfHelpE" json:"selfHelpE"`
 	ReceptiveB  int `bson:"receptiveB" json:"receptiveB"`
 	ReceptiveE  int `bson:"receptiveE" json:"receptiveE"`
-
-
-
-
 	ExpressiveB int `bson:"expressiveB" json:"expressiveB"`
 	ExpressiveE int `bson:"expressiveE" json:"expressiveE"`
 	CognitiveB  int `bson:"cognitiveB" json:"cognitiveB"`
@@ -82,43 +77,37 @@ type Timeline struct {
 }
 
 type Payment struct {
-	ID          interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentName string      `bson:"studentName" json:"studentName"`
-	Age         string      `bson:"age" json:"age"`
-	Birthday    string      `bson:"birthday" json:"birthday"`
-	Level       string      `bson:"level" json:"level"`
-
-	FatherName string `bson:"fatherName" json:"fatherName"`
-	FatherJob  string `bson:"fatherJob" json:"fatherJob"`
-	Address    string `bson:"address" json:"address"`
-
-	MotherName string `bson:"motherName" json:"motherName"`
-	MotherJob  string `bson:"motherJob" json:"motherJob"`
-	ContactNo  string `bson:"contactNo" json:"contactNo"`
-
-	Registration float64 `bson:"registration" json:"registration"`
-	Miscellaneous float64 `bson:"miscellaneous" json:"miscellaneous"`
-	Books         float64 `bson:"books" json:"books"`
-	GraduationFee float64 `bson:"graduationFee" json:"graduationFee"`
-
-	Uniform float64 `bson:"uniform" json:"uniform"`
-	PE      float64 `bson:"pe" json:"pe"`
-	LD      float64 `bson:"ld" json:"ld"`
-	PTA     float64 `bson:"pta" json:"pta"`
-
-	Monthly  float64 `bson:"monthly" json:"monthly"`
-	June     bool    `bson:"june" json:"june"`
-	July     bool    `bson:"july" json:"july"`
-	August   bool    `bson:"august" json:"august"`
-	September bool   `bson:"september" json:"september"`
-	October  bool    `bson:"october" json:"october"`
-	November bool    `bson:"november" json:"november"`
-	December bool    `bson:"december" json:"december"`
-	January  bool    `bson:"january" json:"january"`
-	February bool    `bson:"february" json:"february"`
-	March    bool    `bson:"march" json:"march"`
-
-	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
+	ID           interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentName  string      `bson:"studentName" json:"studentName"`
+	Age          string      `bson:"age" json:"age"`
+	Birthday     string      `bson:"birthday" json:"birthday"`
+	Level        string      `bson:"level" json:"level"`
+	FatherName   string      `bson:"fatherName" json:"fatherName"`
+	FatherJob    string      `bson:"fatherJob" json:"fatherJob"`
+	Address      string      `bson:"address" json:"address"`
+	MotherName   string      `bson:"motherName" json:"motherName"`
+	MotherJob    string      `bson:"motherJob" json:"motherJob"`
+	ContactNo    string      `bson:"contactNo" json:"contactNo"`
+	Registration float64     `bson:"registration" json:"registration"`
+	Miscellaneous float64    `bson:"miscellaneous" json:"miscellaneous"`
+	Books         float64    `bson:"books" json:"books"`
+	GraduationFee float64    `bson:"graduationFee" json:"graduationFee"`
+	Uniform       float64    `bson:"uniform" json:"uniform"`
+	PE            float64    `bson:"pe" json:"pe"`
+	LD            float64    `bson:"ld" json:"ld"`
+	PTA           float64    `bson:"pta" json:"pta"`
+	Monthly       float64    `bson:"monthly" json:"monthly"`
+	June          bool       `bson:"june" json:"june"`
+	July          bool       `bson:"july" json:"july"`
+	August        bool       `bson:"august" json:"august"`
+	September     bool       `bson:"september" json:"september"`
+	October       bool       `bson:"october" json:"october"`
+	November      bool       `bson:"november" json:"november"`
+	December      bool       `bson:"december" json:"december"`
+	January       bool       `bson:"january" json:"january"`
+	February      bool       `bson:"february" json:"february"`
+	March         bool       `bson:"march" json:"march"`
+	CreatedAt     time.Time  `bson:"createdAt" json:"createdAt"`
 }
 
 // -------------------- GLOBALS --------------------
@@ -131,7 +120,23 @@ var postsColl, messagesColl, modulesColl, evalColl, timelineColl, paymentColl *m
 func main() {
 	_ = godotenv.Load()
 	mongoURI := os.Getenv("MONGO_URI")
-@@ -143,8 +103,6 @@
+	dbName := os.Getenv("DB_NAME")
+	port := os.Getenv("PORT")
+
+	if mongoURI == "" || dbName == "" {
+		log.Fatal("❌ Missing MONGO_URI or DB_NAME in .env")
+	}
+	if port == "" {
+		port = "8080"
+	}
+
+	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		log.Fatal("❌ Mongo connect error:", err)
+	}
+
+	db = client.Database(dbName)
+	postsColl = db.Collection("posts")
 	messagesColl = db.Collection("messages")
 	modulesColl = db.Collection("modules")
 	evalColl = db.Collection("evaluations")
@@ -140,27 +145,28 @@ func main() {
 
 	log.Println("✅ Connected to MongoDB:", dbName)
 
-@@ -157,7 +115,11 @@
+	// -------------------- SOCKET.IO --------------------
+	server := socketio.NewServer(nil)
+	server.OnConnect("/", func(s socketio.Conn) error {
+		s.Join("global")
+		log.Println("⚡ New socket connected:", s.ID())
+		return nil
 	})
 	server.OnEvent("/", "send_message", func(s socketio.Conn, msg Message) {
 		msg.CreatedAt = time.Now()
 		messagesColl.InsertOne(context.Background(), msg)
-
-
-
-
 		server.BroadcastToRoom("/", "global", "receive_message", msg)
 	})
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-@@ -180,19 +142,14 @@
-	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
-	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
+		log.Println("❌ Socket disconnected:", s.ID(), reason)
+	})
+	go server.Serve()
+	defer server.Close()
 
-	http.HandleFunc("/timeline", cors(getTimelineHandler))
+	// -------------------- HTTP HANDLERS --------------------
+
 	http.HandleFunc("/addTimeline", cors(addTimelineHandler))
-
-	http.HandleFunc("/addPayment", cors(addPaymentHandler))
-	http.HandleFunc("/payments", cors(getPaymentsHandler))
+	http.HandleFunc("/timeline", cors(getTimelineHandler))
 
 	http.Handle("/socket.io/", server)
 
@@ -173,31 +179,18 @@ func main() {
 func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-@@ -205,56 +162,230 @@
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			return
+		}
+		next(w, r)
 	}
 }
 
-// -------------------- EXISTING HANDLERS (Posts, Chat, Modules, Evaluations) --------------------
-// (Keep your existing working versions — I’ll skip re-pasting them for brevity)
-
 // -------------------- TIMELINE --------------------
+
 func addTimelineHandler(w http.ResponseWriter, r *http.Request) {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
@@ -209,19 +202,27 @@ func addTimelineHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	t.CreatedAt = time.Now()
 	t.Date = time.Now()
-	timelineColl.InsertOne(r.Context(), t)
-
-
-
+	_, err := timelineColl.InsertOne(r.Context(), t)
+	if err != nil {
+		http.Error(w, "insert failed", http.StatusInternalServerError)
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func getTimelineHandler(w http.ResponseWriter, r *http.Request) {
-
-
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	cur, _ := timelineColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{"createdAt", -1}}))
+	cur, err := timelineColl.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}))
+	if err != nil {
+		http.Error(w, "db find failed", http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(ctx)
 	var list []Timeline
-	cur.All(ctx, &list)
+	if err := cur.All(ctx, &list); err != nil {
+		http.Error(w, "decode failed", http.StatusInternalServerError)
+		return
+	}
 	json.NewEncoder(w).Encode(list)
+}
