@@ -127,7 +127,7 @@ func main() {
 		log.Fatal("❌ Missing MONGO_URI or DB_NAME in .env")
 	}
 	if port == "" {
-		port = "8080"
+		port = "8084"
 	}
 
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
@@ -226,3 +226,4 @@ func getTimelineHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(list)
 }
+
