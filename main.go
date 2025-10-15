@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -43,13 +46,25 @@ type Module struct {
 	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
-// Dynamic Evaluation struct with numeric B/E scores
 type Evaluation struct {
-	ID        interface{}                                   `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID string                                        `bson:"studentId" json:"studentId"`
-	Age       string                                        `bson:"age" json:"age"`
-	Scores    map[string]map[int]struct{ B, E int }        `bson:"scores" json:"scores"`
-	CreatedAt time.Time                                     `bson:"createdAt" json:"createdAt"`
+	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID string      `bson:"studentId" json:"studentId"`
+	Age       string      `bson:"age" json:"age"`
+	GrossMotorB int `bson:"grossMotorB" json:"grossMotorB"`
+	GrossMotorE int `bson:"grossMotorE" json:"grossMotorE"`
+	FineMotorB int `bson:"fineMotorB" json:"fineMotorB"`
+	FineMotorE int `bson:"fineMotorE" json:"fineMotorE"`
+	SelfHelpB int `bson:"selfHelpB" json:"selfHelpB"`
+	SelfHelpE int `bson:"selfHelpE" json:"selfHelpE"`
+	ReceptiveB int `bson:"receptiveB" json:"receptiveB"`
+	ReceptiveE int `bson:"receptiveE" json:"receptiveE"`
+	ExpressiveB int `bson:"expressiveB" json:"expressiveB"`
+	ExpressiveE int `bson:"expressiveE" json:"expressiveE"`
+	CognitiveB int `bson:"cognitiveB" json:"cognitiveB"`
+	CognitiveE int `bson:"cognitiveE" json:"cognitiveE"`
+	SocialB int `bson:"socialB" json:"socialB"`
+	SocialE int `bson:"socialE" json:"socialE"`
+	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
 }
 
 type Payment struct {
@@ -145,7 +160,7 @@ func main() {
 	http.HandleFunc("/file/", cors(serveFileHandler))
 	// EVALUATIONS
 	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
-	http.HandleFunc("/evaluations", cors(getEvaluationsHandler))
+	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
 	// PAYMENTS
 	http.HandleFunc("/addPayment", cors(addPaymentHandler))
 	http.HandleFunc("/getPayments", cors(getPaymentsHandler))
@@ -217,66 +232,4 @@ func getPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(payments)
 }
 
-// -------------------- EVALUATIONS --------------------
-
-func addEvaluationHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var eval Evaluation
-	if err := json.NewDecoder(r.Body).Decode(&eval); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-
-	eval.CreatedAt = time.Now()
-	if eval.Scores == nil {
-		eval.Scores = make(map[string]map[int]struct{ B, E int })
-	}
-
-	_, err := evalColl.InsertOne(r.Context(), eval)
-	if err != nil {
-		http.Error(w, "DB insert error", http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
-	studentID := r.URL.Query().Get("studentId")
-	filter := bson.M{}
-	if studentID != "" {
-		filter["studentId"] = studentID
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	cur, err := evalColl.Find(ctx, filter)
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(ctx)
-
-	var evaluations []Evaluation
-	if err := cur.All(ctx, &evaluations); err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(evaluations)
-}
-
-// -------------------- Placeholder Handlers --------------------
-// Implement these as needed in your existing code
-
-func getPostsHandler(w http.ResponseWriter, r *http.Request)            {}
-func uploadPostHandler(w http.ResponseWriter, r *http.Request)        {}
-func getMessagesHandler(w http.ResponseWriter, r *http.Request)       {}
-func sendMessageHandler(w http.ResponseWriter, r *http.Request)       {}
-func getModulesHandler(w http.ResponseWriter, r *http.Request)        {}
-func uploadModuleHandler(w http.ResponseWriter, r *http.Request)      {}
-func serveFileHandler(w http.ResponseWriter, r *http.Request)         {}
+// -------------------- Other handlers remain the same --------------------
