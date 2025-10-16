@@ -10,6 +10,8 @@ import (
 	"time"
 
 	socketio "github.com/googollee/go-socket.io"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -19,9 +21,8 @@ import (
 var paymentCollection *mongo.Collection
 
 func main() {
-	// Load environment variables
-	err := godotenv.Load()
-	if err != nil {
+	// === Load environment ===
+	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ No .env file found. Using environment variables.")
 	}
 
@@ -30,7 +31,7 @@ func main() {
 		log.Fatal("❌ MONGO_URI not set in environment")
 	}
 
-	// Connect to MongoDB
+	// === MongoDB connection ===
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal("❌ Failed to connect to MongoDB:", err)
@@ -40,11 +41,11 @@ func main() {
 	db := client.Database("schoolDB")
 	paymentCollection = db.Collection("payments")
 
-	// Setup Socket.IO server
+	// === Setup Socket.IO ===
 	server := socketio.NewServer(nil)
 
 	server.OnConnect("/", func(s socketio.Conn) error {
-		log.Println("✅ New WebSocket connection:", s.ID())
+		log.Println("✅ WebSocket connected:", s.ID())
 		return nil
 	})
 
@@ -54,7 +55,7 @@ func main() {
 	})
 
 	server.OnError("/", func(s socketio.Conn, e error) {
-		log.Println("⚠️ WebSocket error:", e)
+		log.Println("⚠️ Socket error:", e)
 	})
 
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
@@ -64,82 +65,86 @@ func main() {
 	go server.Serve()
 	defer server.Close()
 
-	// HTTP Routes
-	http.Handle("/socket.io/", server)
-	http.HandleFunc("/addPayment", cors(addPaymentHandler))
-	http.HandleFunc("/getPayments", cors(getPaymentsHandler))
+	// === Setup Gin ===
+	r := gin.Default()
 
-	// Placeholder routes (optional, so app builds)
-	http.HandleFunc("/getPosts", cors(getPostsHandler))
-	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
-	http.HandleFunc("/getMessages", cors(getMessagesHandler))
-	http.HandleFunc("/sendMessage", cors(sendMessageHandler))
-	http.HandleFunc("/getModules", cors(getModulesHandler))
-	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
-	http.HandleFunc("/file/", cors(serveFileHandler))
-	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
-	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
+	// ✅ CORS fix
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:1420", "https://publicbackend-production.up.railway.app"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 
+	// === Socket.IO routes ===
+	r.GET("/socket.io/*any", gin.WrapH(server))
+	r.POST("/socket.io/*any", gin.WrapH(server))
+
+	// === Payment routes ===
+	r.POST("/addPayment", addPaymentHandler)
+	r.GET("/getPayments", getPaymentsHandler)
+
+	// === Placeholder routes ===
+	r.GET("/getPosts", getPostsHandler)
+	r.POST("/uploadPost", uploadPostHandler)
+	r.GET("/getMessages", getMessagesHandler)
+	r.POST("/sendMessage", sendMessageHandler)
+	r.GET("/getModules", getModulesHandler)
+	r.POST("/uploadModule", uploadModuleHandler)
+	r.GET("/file/*filepath", serveFileHandler)
+	r.POST("/addEvaluation", addEvaluationHandler)
+	r.GET("/evaluations/*id", getEvaluationsHandler)
+
+	// === Run server ===
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 	log.Println("🚀 Server running on port:", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal("❌ Server failed:", err)
+	}
 }
 
 // === Handlers ===
 
-func addPaymentHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+func addPaymentHandler(c *gin.Context) {
+	var payment map[string]interface{}
+	if err := c.BindJSON(&payment); err != nil {
+		c.String(http.StatusBadRequest, "Invalid JSON")
 		return
 	}
-	var payment map[string]interface{}
-	json.NewDecoder(r.Body).Decode(&payment)
 	payment["createdAt"] = time.Now()
 
 	_, err := paymentCollection.InsertOne(context.Background(), payment)
 	if err != nil {
-		http.Error(w, "Failed to add payment", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "Failed to add payment")
 		return
 	}
-	w.Write([]byte("Payment added successfully"))
+	c.String(http.StatusOK, "Payment added successfully")
 }
 
-func getPaymentsHandler(w http.ResponseWriter, r *http.Request) {
+func getPaymentsHandler(c *gin.Context) {
 	cursor, err := paymentCollection.Find(context.Background(), bson.M{})
 	if err != nil {
-		http.Error(w, "Failed to fetch payments", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "Failed to fetch payments")
 		return
 	}
 	var payments []bson.M
 	cursor.All(context.Background(), &payments)
-	json.NewEncoder(w).Encode(payments)
+	c.JSON(http.StatusOK, payments)
 }
 
-// === Placeholder Handlers (so build doesn’t fail) ===
+// === Placeholder Handlers ===
 
-func getPostsHandler(w http.ResponseWriter, r *http.Request)       { w.Write([]byte("getPostsHandler")) }
-func uploadPostHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("uploadPostHandler")) }
-func getMessagesHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("getMessagesHandler")) }
-func sendMessageHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("sendMessageHandler")) }
-func getModulesHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("getModulesHandler")) }
-func uploadModuleHandler(w http.ResponseWriter, r *http.Request)   { w.Write([]byte("uploadModuleHandler")) }
-func serveFileHandler(w http.ResponseWriter, r *http.Request)      { w.Write([]byte("serveFileHandler")) }
-func addEvaluationHandler(w http.ResponseWriter, r *http.Request)  { w.Write([]byte("addEvaluationHandler")) }
-func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) { w.Write([]byte("getEvaluationsHandler")) }
-
-// === Helper ===
-
-func cors(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == "OPTIONS" {
-			return
-		}
-		next.ServeHTTP(w, r)
-	}
-}
+func getPostsHandler(c *gin.Context)       { c.String(http.StatusOK, "getPostsHandler") }
+func uploadPostHandler(c *gin.Context)     { c.String(http.StatusOK, "uploadPostHandler") }
+func getMessagesHandler(c *gin.Context)    { c.String(http.StatusOK, "getMessagesHandler") }
+func sendMessageHandler(c *gin.Context)    { c.String(http.StatusOK, "sendMessageHandler") }
+func getModulesHandler(c *gin.Context)     { c.String(http.StatusOK, "getModulesHandler") }
+func uploadModuleHandler(c *gin.Context)   { c.String(http.StatusOK, "uploadModuleHandler") }
+func serveFileHandler(c *gin.Context)      { c.String(http.StatusOK, "serveFileHandler") }
+func addEvaluationHandler(c *gin.Context)  { c.String(http.StatusOK, "addEvaluationHandler") }
+func getEvaluationsHandler(c *gin.Context) { c.String(http.StatusOK, "getEvaluationsHandler") }
