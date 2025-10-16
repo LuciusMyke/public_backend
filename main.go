@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,232 +12,134 @@ import (
 	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// -------------------- STRUCTS --------------------
-
-type Post struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	User      string      `bson:"user" json:"user"`
-	Caption   string      `bson:"caption" json:"caption"`
-	PhotoURL  string      `bson:"photoUrl" json:"photoUrl"`
-	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
-}
-
-type Message struct {
-	Sender    string    `bson:"sender" json:"sender"`
-	Receiver  string    `bson:"receiver" json:"receiver"`
-	Message   string    `bson:"message" json:"message"`
-	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
-}
-
-type Module struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	Title     string      `bson:"title" json:"title"`
-	FileName  string      `bson:"fileName" json:"fileName"`
-	FileURL   string      `bson:"fileUrl" json:"fileUrl"`
-	FileType  string      `bson:"fileType" json:"fileType"`
-	CreatedAt time.Time   `bson:"createdAt" json:"createdAt"`
-}
-
-type Evaluation struct {
-	ID          interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID   string      `bson:"studentId" json:"studentId"`
-	Age         string      `bson:"age" json:"age"`
-	GrossMotorB int         `bson:"grossMotorB" json:"grossMotorB"`
-	GrossMotorE int         `bson:"grossMotorE" json:"grossMotorE"`
-	FineMotorB  int         `bson:"fineMotorB" json:"fineMotorB"`
-	FineMotorE  int         `bson:"fineMotorE" json:"fineMotorE"`
-	SelfHelpB   int         `bson:"selfHelpB" json:"selfHelpB"`
-	SelfHelpE   int         `bson:"selfHelpE" json:"selfHelpE"`
-	ReceptiveB  int         `bson:"receptiveB" json:"receptiveB"`
-	ReceptiveE  int         `bson:"receptiveE" json:"receptiveE"`
-	ExpressiveB int         `bson:"expressiveB" json:"expressiveB"`
-	ExpressiveE int         `bson:"expressiveE" json:"expressiveE"`
-	CognitiveB  int         `bson:"cognitiveB" json:"cognitiveB"`
-	CognitiveE  int         `bson:"cognitiveE" json:"cognitiveE"`
-	SocialB     int         `bson:"socialB" json:"socialB"`
-	SocialE     int         `bson:"socialE" json:"socialE"`
-	CreatedAt   time.Time   `bson:"createdAt" json:"createdAt"`
-}
-
-type Payment struct {
-	ID            primitive.ObjectID `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID     string             `bson:"studentId" json:"studentId"`
-	PupilName     string             `bson:"pupilName" json:"pupilName"`
-	Age           string             `bson:"age" json:"age"`
-	Birthday      string             `bson:"birthday" json:"birthday"`
-	Level         string             `bson:"level" json:"level"`
-	FatherName    string             `bson:"fatherName" json:"fatherName"`
-	FatherJob     string             `bson:"fatherJob" json:"fatherJob"`
-	MotherName    string             `bson:"motherName" json:"motherName"`
-	MotherJob     string             `bson:"motherJob" json:"motherJob"`
-	Address       string             `bson:"address" json:"address"`
-	Contact       string             `bson:"contact" json:"contact"`
-	Registration  string             `bson:"registration" json:"registration"`
-	Miscellaneous string             `bson:"miscellaneous" json:"miscellaneous"`
-	Book          string             `bson:"book" json:"book"`
-	GraduationFee string             `bson:"graduationFee" json:"graduationFee"`
-	Uniform       string             `bson:"uniform" json:"uniform"`
-	PEUniform     string             `bson:"peUniform" json:"peUniform"`
-	LDUniform     string             `bson:"ldUniform" json:"ldUniform"`
-	PTACHair      string             `bson:"ptaChair" json:"ptaChair"`
-	Monthly       map[string]string  `bson:"monthly" json:"monthly"`
-	GeneralRules  string             `bson:"generalRules" json:"generalRules"`
-	CreatedAt     time.Time          `bson:"createdAt" json:"createdAt"`
-}
-
-// -------------------- GLOBALS --------------------
-
-var db *mongo.Database
-var postsColl, messagesColl, modulesColl, evalColl, paymentsColl *mongo.Collection
-
-// -------------------- MAIN --------------------
+var paymentCollection *mongo.Collection
 
 func main() {
-	_ = godotenv.Load()
-	mongoURI := os.Getenv("MONGO_URI")
-	dbName := os.Getenv("DB_NAME")
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8084"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	// Load environment variables
+	err := godotenv.Load()
 	if err != nil {
-		log.Fatal(err)
+		log.Println("⚠️ No .env file found. Using environment variables.")
 	}
 
-	db = client.Database(dbName)
-	postsColl = db.Collection("posts")
-	messagesColl = db.Collection("messages")
-	modulesColl = db.Collection("modules")
-	evalColl = db.Collection("evaluations")
-	paymentsColl = db.Collection("payments")
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		log.Fatal("❌ MONGO_URI not set in environment")
+	}
 
-	log.Println("✅ Connected to MongoDB:", dbName)
+	// Connect to MongoDB
+	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		log.Fatal("❌ Failed to connect to MongoDB:", err)
+	}
+	defer client.Disconnect(context.Background())
 
-	// -------------------- SOCKET.IO --------------------
+	db := client.Database("schoolDB")
+	paymentCollection = db.Collection("payments")
+
+	// Setup Socket.IO server
 	server := socketio.NewServer(nil)
+
 	server.OnConnect("/", func(s socketio.Conn) error {
-		log.Println("New connection:", s.ID())
-		s.Join("global")
+		log.Println("✅ New WebSocket connection:", s.ID())
 		return nil
 	})
-	server.OnEvent("/", "send_message", func(s socketio.Conn, msg Message) {
-		msg.CreatedAt = time.Now()
-		_, err := messagesColl.InsertOne(context.Background(), msg)
-		if err != nil {
-			log.Println("DB insert error:", err)
-			return
-		}
-		server.BroadcastToRoom("/", "global", "receive_message", msg)
+
+	server.OnEvent("/", "message", func(s socketio.Conn, msg string) {
+		log.Println("💬 Message received:", msg)
+		s.Emit("reply", "Message received: "+msg)
 	})
+
+	server.OnError("/", func(s socketio.Conn, e error) {
+		log.Println("⚠️ WebSocket error:", e)
+	})
+
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		log.Println("Disconnected:", s.ID(), reason)
+		log.Println("❌ Disconnected:", reason)
 	})
+
 	go server.Serve()
 	defer server.Close()
 
-	// -------------------- ROUTES --------------------
-	// POSTS
-	http.HandleFunc("/posts", cors(getPostsHandler))
-	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
-	// CHAT
-	http.HandleFunc("/getMessages", cors(getMessagesHandler))
-	http.HandleFunc("/sendMessage", cors(sendMessageHandler))
-	// MODULES
-	http.HandleFunc("/modules", cors(getModulesHandler))
-	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
-	http.HandleFunc("/file/", cors(serveFileHandler))
-	// EVALUATIONS
-	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
-	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
-	// PAYMENTS
+	// HTTP Routes
+	http.Handle("/socket.io/", server)
 	http.HandleFunc("/addPayment", cors(addPaymentHandler))
 	http.HandleFunc("/getPayments", cors(getPaymentsHandler))
-	// SOCKET.IO
-	http.Handle("/socket.io/", server)
 
+	// Placeholder routes (optional, so app builds)
+	http.HandleFunc("/getPosts", cors(getPostsHandler))
+	http.HandleFunc("/uploadPost", cors(uploadPostHandler))
+	http.HandleFunc("/getMessages", cors(getMessagesHandler))
+	http.HandleFunc("/sendMessage", cors(sendMessageHandler))
+	http.HandleFunc("/getModules", cors(getModulesHandler))
+	http.HandleFunc("/uploadModule", cors(uploadModuleHandler))
+	http.HandleFunc("/file/", cors(serveFileHandler))
+	http.HandleFunc("/addEvaluation", cors(addEvaluationHandler))
+	http.HandleFunc("/evaluations/", cors(getEvaluationsHandler))
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 	log.Println("🚀 Server running on port:", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-// -------------------- CORS --------------------
+// === Handlers ===
+
+func addPaymentHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+		return
+	}
+	var payment map[string]interface{}
+	json.NewDecoder(r.Body).Decode(&payment)
+	payment["createdAt"] = time.Now()
+
+	_, err := paymentCollection.InsertOne(context.Background(), payment)
+	if err != nil {
+		http.Error(w, "Failed to add payment", http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte("Payment added successfully"))
+}
+
+func getPaymentsHandler(w http.ResponseWriter, r *http.Request) {
+	cursor, err := paymentCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		http.Error(w, "Failed to fetch payments", http.StatusInternalServerError)
+		return
+	}
+	var payments []bson.M
+	cursor.All(context.Background(), &payments)
+	json.NewEncoder(w).Encode(payments)
+}
+
+// === Placeholder Handlers (so build doesn’t fail) ===
+
+func getPostsHandler(w http.ResponseWriter, r *http.Request)       { w.Write([]byte("getPostsHandler")) }
+func uploadPostHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("uploadPostHandler")) }
+func getMessagesHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("getMessagesHandler")) }
+func sendMessageHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("sendMessageHandler")) }
+func getModulesHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("getModulesHandler")) }
+func uploadModuleHandler(w http.ResponseWriter, r *http.Request)   { w.Write([]byte("uploadModuleHandler")) }
+func serveFileHandler(w http.ResponseWriter, r *http.Request)      { w.Write([]byte("serveFileHandler")) }
+func addEvaluationHandler(w http.ResponseWriter, r *http.Request)  { w.Write([]byte("addEvaluationHandler")) }
+func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) { w.Write([]byte("getEvaluationsHandler")) }
+
+// === Helper ===
 
 func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == "OPTIONS" {
 			return
 		}
-		next(w, r)
+		next.ServeHTTP(w, r)
 	}
 }
-
-// -------------------- PAYMENTS --------------------
-
-func addPaymentHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var p Payment
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	p.CreatedAt = time.Now()
-	if p.StudentID == "" {
-		p.StudentID = p.PupilName
-	}
-	_, err := paymentsColl.InsertOne(r.Context(), p)
-	if err != nil {
-		http.Error(w, "DB insert error", http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func getPaymentsHandler(w http.ResponseWriter, r *http.Request) {
-	studentID := r.URL.Query().Get("studentId")
-	filter := bson.M{}
-	if studentID != "" {
-		filter["studentId"] = studentID
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	cur, err := paymentsColl.Find(ctx, filter)
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(ctx)
-
-	var payments []Payment
-	if err := cur.All(ctx, &payments); err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(payments)
-}
-
-// -------------------- PLACEHOLDER HANDLERS --------------------
-
-func getPostsHandler(w http.ResponseWriter, r *http.Request)       { w.Write([]byte("getPostsHandler not implemented")) }
-func uploadPostHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("uploadPostHandler not implemented")) }
-func getMessagesHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("getMessagesHandler not implemented")) }
-func sendMessageHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("sendMessageHandler not implemented")) }
-func getModulesHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("getModulesHandler not implemented")) }
-func uploadModuleHandler(w http.ResponseWriter, r *http.Request)   { w.Write([]byte("uploadModuleHandler not implemented")) }
-func serveFileHandler(w http.ResponseWriter, r *http.Request)      { w.Write([]byte("serveFileHandler not implemented")) }
-func addEvaluationHandler(w http.ResponseWriter, r *http.Request)  { w.Write([]byte("addEvaluationHandler not implemented")) }
-func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) { w.Write([]byte("getEvaluationsHandler not implemented")) }
