@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -47,50 +46,50 @@ type Module struct {
 }
 
 type Evaluation struct {
-	ID        interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID string      `bson:"studentId" json:"studentId"`
-	Age       string      `bson:"age" json:"age"`
-	GrossMotorB int `bson:"grossMotorB" json:"grossMotorB"`
-	GrossMotorE int `bson:"grossMotorE" json:"grossMotorE"`
-	FineMotorB int `bson:"fineMotorB" json:"fineMotorB"`
-	FineMotorE int `bson:"fineMotorE" json:"fineMotorE"`
-	SelfHelpB int `bson:"selfHelpB" json:"selfHelpB"`
-	SelfHelpE int `bson:"selfHelpE" json:"selfHelpE"`
-	ReceptiveB int `bson:"receptiveB" json:"receptiveB"`
-	ReceptiveE int `bson:"receptiveE" json:"receptiveE"`
-	ExpressiveB int `bson:"expressiveB" json:"expressiveB"`
-	ExpressiveE int `bson:"expressiveE" json:"expressiveE"`
-	CognitiveB int `bson:"cognitiveB" json:"cognitiveB"`
-	CognitiveE int `bson:"cognitiveE" json:"cognitiveE"`
-	SocialB int `bson:"socialB" json:"socialB"`
-	SocialE int `bson:"socialE" json:"socialE"`
-	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
+	ID          interface{} `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID   string      `bson:"studentId" json:"studentId"`
+	Age         string      `bson:"age" json:"age"`
+	GrossMotorB int         `bson:"grossMotorB" json:"grossMotorB"`
+	GrossMotorE int         `bson:"grossMotorE" json:"grossMotorE"`
+	FineMotorB  int         `bson:"fineMotorB" json:"fineMotorB"`
+	FineMotorE  int         `bson:"fineMotorE" json:"fineMotorE"`
+	SelfHelpB   int         `bson:"selfHelpB" json:"selfHelpB"`
+	SelfHelpE   int         `bson:"selfHelpE" json:"selfHelpE"`
+	ReceptiveB  int         `bson:"receptiveB" json:"receptiveB"`
+	ReceptiveE  int         `bson:"receptiveE" json:"receptiveE"`
+	ExpressiveB int         `bson:"expressiveB" json:"expressiveB"`
+	ExpressiveE int         `bson:"expressiveE" json:"expressiveE"`
+	CognitiveB  int         `bson:"cognitiveB" json:"cognitiveB"`
+	CognitiveE  int         `bson:"cognitiveE" json:"cognitiveE"`
+	SocialB     int         `bson:"socialB" json:"socialB"`
+	SocialE     int         `bson:"socialE" json:"socialE"`
+	CreatedAt   time.Time   `bson:"createdAt" json:"createdAt"`
 }
 
 type Payment struct {
-	ID           primitive.ObjectID   `bson:"_id,omitempty" json:"_id,omitempty"`
-	StudentID    string               `bson:"studentId" json:"studentId"`
-	PupilName    string               `bson:"pupilName" json:"pupilName"`
-	Age          string               `bson:"age" json:"age"`
-	Birthday     string               `bson:"birthday" json:"birthday"`
-	Level        string               `bson:"level" json:"level"`
-	FatherName   string               `bson:"fatherName" json:"fatherName"`
-	FatherJob    string               `bson:"fatherJob" json:"fatherJob"`
-	MotherName   string               `bson:"motherName" json:"motherName"`
-	MotherJob    string               `bson:"motherJob" json:"motherJob"`
-	Address      string               `bson:"address" json:"address"`
-	Contact      string               `bson:"contact" json:"contact"`
-	Registration string               `bson:"registration" json:"registration"`
-	Miscellaneous string              `bson:"miscellaneous" json:"miscellaneous"`
-	Book         string               `bson:"book" json:"book"`
-	GraduationFee string              `bson:"graduationFee" json:"graduationFee"`
-	Uniform      string               `bson:"uniform" json:"uniform"`
-	PEUniform    string               `bson:"peUniform" json:"peUniform"`
-	LDUniform    string               `bson:"ldUniform" json:"ldUniform"`
-	PTACHair     string               `bson:"ptaChair" json:"ptaChair"`
-	Monthly      map[string]string    `bson:"monthly" json:"monthly"`
-	GeneralRules string               `bson:"generalRules" json:"generalRules"`
-	CreatedAt    time.Time            `bson:"createdAt" json:"createdAt"`
+	ID            primitive.ObjectID `bson:"_id,omitempty" json:"_id,omitempty"`
+	StudentID     string             `bson:"studentId" json:"studentId"`
+	PupilName     string             `bson:"pupilName" json:"pupilName"`
+	Age           string             `bson:"age" json:"age"`
+	Birthday      string             `bson:"birthday" json:"birthday"`
+	Level         string             `bson:"level" json:"level"`
+	FatherName    string             `bson:"fatherName" json:"fatherName"`
+	FatherJob     string             `bson:"fatherJob" json:"fatherJob"`
+	MotherName    string             `bson:"motherName" json:"motherName"`
+	MotherJob     string             `bson:"motherJob" json:"motherJob"`
+	Address       string             `bson:"address" json:"address"`
+	Contact       string             `bson:"contact" json:"contact"`
+	Registration  string             `bson:"registration" json:"registration"`
+	Miscellaneous string             `bson:"miscellaneous" json:"miscellaneous"`
+	Book          string             `bson:"book" json:"book"`
+	GraduationFee string             `bson:"graduationFee" json:"graduationFee"`
+	Uniform       string             `bson:"uniform" json:"uniform"`
+	PEUniform     string             `bson:"peUniform" json:"peUniform"`
+	LDUniform     string             `bson:"ldUniform" json:"ldUniform"`
+	PTACHair      string             `bson:"ptaChair" json:"ptaChair"`
+	Monthly       map[string]string  `bson:"monthly" json:"monthly"`
+	GeneralRules  string             `bson:"generalRules" json:"generalRules"`
+	CreatedAt     time.Time          `bson:"createdAt" json:"createdAt"`
 }
 
 // -------------------- GLOBALS --------------------
@@ -232,4 +231,14 @@ func getPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(payments)
 }
 
-// -------------------- Other handlers remain the same --------------------
+// -------------------- PLACEHOLDER HANDLERS --------------------
+
+func getPostsHandler(w http.ResponseWriter, r *http.Request)       { w.Write([]byte("getPostsHandler not implemented")) }
+func uploadPostHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("uploadPostHandler not implemented")) }
+func getMessagesHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("getMessagesHandler not implemented")) }
+func sendMessageHandler(w http.ResponseWriter, r *http.Request)    { w.Write([]byte("sendMessageHandler not implemented")) }
+func getModulesHandler(w http.ResponseWriter, r *http.Request)     { w.Write([]byte("getModulesHandler not implemented")) }
+func uploadModuleHandler(w http.ResponseWriter, r *http.Request)   { w.Write([]byte("uploadModuleHandler not implemented")) }
+func serveFileHandler(w http.ResponseWriter, r *http.Request)      { w.Write([]byte("serveFileHandler not implemented")) }
+func addEvaluationHandler(w http.ResponseWriter, r *http.Request)  { w.Write([]byte("addEvaluationHandler not implemented")) }
+func getEvaluationsHandler(w http.ResponseWriter, r *http.Request) { w.Write([]byte("getEvaluationsHandler not implemented")) }
