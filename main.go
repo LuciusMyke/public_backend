@@ -13,6 +13,7 @@ import (
 	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -22,6 +23,7 @@ var (
 	postsCollection    *mongo.Collection
 	messagesCollection *mongo.Collection
 	paymentCollection  *mongo.Collection
+	modulesCollection  *mongo.Collection
 	server             *socketio.Server
 )
 
@@ -53,6 +55,7 @@ func main() {
 	postsCollection = db.Collection("posts")
 	messagesCollection = db.Collection("messages")
 	paymentCollection = db.Collection("payments")
+	modulesCollection = db.Collection("modules")
 
 	// Setup Socket.IO
 	server = socketio.NewServer(nil)
@@ -112,6 +115,11 @@ func main() {
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
 
+	// Module routes
+	r.POST("/uploadModule", uploadModuleHandler)
+	r.GET("/getModules", getModulesHandler)
+	r.DELETE("/deleteModule", deleteModuleHandler)
+
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -133,7 +141,6 @@ func createUserHandler(c *gin.Context) {
 		return
 	}
 	user["createdAt"] = time.Now()
-
 	_, err := usersCollection.InsertOne(context.Background(), user)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to create user")
@@ -177,7 +184,6 @@ func uploadPostHandler(c *gin.Context) {
 		return
 	}
 	post["createdAt"] = time.Now()
-
 	_, err := postsCollection.InsertOne(context.Background(), post)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to upload post")
@@ -212,7 +218,6 @@ func sendMessageHandler(c *gin.Context) {
 		return
 	}
 
-	// Broadcast to WebSocket clients
 	server.BroadcastToNamespace("/", "chatMessage", msg)
 	c.JSON(http.StatusOK, msg)
 }
@@ -225,7 +230,6 @@ func addPaymentHandler(c *gin.Context) {
 		return
 	}
 	payment["createdAt"] = time.Now()
-
 	_, err := paymentCollection.InsertOne(context.Background(), payment)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to add payment")
@@ -243,4 +247,90 @@ func getPaymentsHandler(c *gin.Context) {
 	var payments []bson.M
 	cursor.All(context.Background(), &payments)
 	c.JSON(http.StatusOK, payments)
+}
+
+// --- Modules ---
+func uploadModuleHandler(c *gin.Context) {
+	title := c.PostForm("title")
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.String(http.StatusBadRequest, "File not provided")
+		return
+	}
+
+	// Save file locally
+	savePath := "./uploads/" + fileHeader.Filename
+	if err := os.MkdirAll("./uploads", os.ModePerm); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to create directory")
+		return
+	}
+
+	if err := c.SaveUploadedFile(fileHeader, savePath); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to save file")
+		return
+	}
+
+	module := map[string]interface{}{
+		"title":     title,
+		"fileUrl":   savePath,
+		"createdAt": time.Now(),
+	}
+
+	res, err := modulesCollection.InsertOne(context.Background(), module)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to save module in DB")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":      res.InsertedID,
+		"title":   title,
+		"fileUrl": savePath,
+	})
+}
+
+func getModulesHandler(c *gin.Context) {
+	cursor, err := modulesCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to fetch modules")
+		return
+	}
+	var modules []bson.M
+	cursor.All(context.Background(), &modules)
+	c.JSON(http.StatusOK, modules)
+}
+
+func deleteModuleHandler(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.String(http.StatusBadRequest, "Module ID required")
+		return
+	}
+
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		c.String(http.StatusBadRequest, "Invalid module ID")
+		return
+	}
+
+	// Find module
+	var module bson.M
+	if err := modulesCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&module); err != nil {
+		c.String(http.StatusNotFound, "Module not found")
+		return
+	}
+
+	// Delete file
+	if filePath, ok := module["fileUrl"].(string); ok {
+		os.Remove(filePath)
+	}
+
+	// Delete from DB
+	_, err = modulesCollection.DeleteOne(context.Background(), bson.M{"_id": objID})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to delete module")
+		return
+	}
+
+	c.String(http.StatusOK, "Module deleted successfully")
 }
