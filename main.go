@@ -17,57 +17,72 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var paymentCollection *mongo.Collection
+var (
+	usersCollection    *mongo.Collection
+	postsCollection    *mongo.Collection
+	messagesCollection *mongo.Collection
+	paymentCollection  *mongo.Collection
+	server             *socketio.Server
+)
 
 func main() {
-	// === Load environment ===
+	// Load environment variables
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ No .env file found. Using environment variables.")
+		log.Println("⚠️ No .env file found, using system environment variables")
 	}
 
 	mongoURI := os.Getenv("MONGO_URI")
 	if mongoURI == "" {
-		log.Fatal("❌ MONGO_URI not set in environment")
+		log.Fatal("❌ MONGO_URI not set")
 	}
 
-	// === MongoDB connection ===
+	// Connect to MongoDB
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		log.Fatal("❌ Failed to connect to MongoDB:", err)
+		log.Fatal("❌ MongoDB connect failed:", err)
 	}
 	defer client.Disconnect(context.Background())
 
-	db := client.Database("schoolDB")
+	if err := client.Ping(context.Background(), nil); err != nil {
+		log.Fatal("❌ MongoDB ping failed:", err)
+	}
+	log.Println("✅ MongoDB connected successfully")
+
+	db := client.Database("admin1")
+	usersCollection = db.Collection("users")
+	postsCollection = db.Collection("posts")
+	messagesCollection = db.Collection("messages")
 	paymentCollection = db.Collection("payments")
 
-	// === Setup Socket.IO ===
-	server := socketio.NewServer(nil)
+	// Setup Socket.IO
+	server = socketio.NewServer(nil)
 
 	server.OnConnect("/", func(s socketio.Conn) error {
 		log.Println("✅ WebSocket connected:", s.ID())
 		return nil
 	})
 
-	server.OnEvent("/", "message", func(s socketio.Conn, msg string) {
-		log.Println("💬 Message received:", msg)
-		s.Emit("reply", "Message received: "+msg)
-	})
-
-	server.OnError("/", func(s socketio.Conn, e error) {
-		log.Println("⚠️ Socket error:", e)
+	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
+		// Save message to MongoDB
+		_, err := messagesCollection.InsertOne(context.Background(), msg)
+		if err != nil {
+			log.Println("❌ Failed to save chat message:", err)
+			return
+		}
+		// Broadcast to all clients
+		server.BroadcastToNamespace("/", "chatMessage", msg)
 	})
 
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		log.Println("❌ Disconnected:", reason)
+		log.Println("❌ WebSocket disconnected:", reason)
 	})
 
 	go server.Serve()
 	defer server.Close()
 
-	// === Setup Gin ===
+	// Setup Gin
 	r := gin.Default()
 
-	// ✅ CORS fix
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:1420", "https://publicbackend-production.up.railway.app"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -77,29 +92,30 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// === Socket.IO routes ===
+	// Socket.IO routes
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
 
-	// === Payment routes ===
+	// User routes
+	r.POST("/createUser", createUserHandler)
+	r.POST("/login", loginHandler)
+
+	// Timeline routes
+	r.GET("/getPosts", getPostsHandler)
+	r.POST("/uploadPost", uploadPostHandler)
+
+	// Chat routes
+	r.GET("/getMessages", getMessagesHandler)
+	r.POST("/sendMessage", sendMessageHandler)
+
+	// Payment routes
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
 
-	// === Placeholder routes ===
-	r.GET("/getPosts", getPostsHandler)
-	r.POST("/uploadPost", uploadPostHandler)
-	r.GET("/getMessages", getMessagesHandler)
-	r.POST("/sendMessage", sendMessageHandler)
-	r.GET("/getModules", getModulesHandler)
-	r.POST("/uploadModule", uploadModuleHandler)
-	r.GET("/file/*filepath", serveFileHandler)
-	r.POST("/addEvaluation", addEvaluationHandler)
-	r.GET("/evaluations/*id", getEvaluationsHandler)
-
-	// === Run server ===
+	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "8084"
 	}
 	log.Println("🚀 Server running on port:", port)
 	if err := r.Run(":" + port); err != nil {
@@ -107,8 +123,101 @@ func main() {
 	}
 }
 
-// === Handlers ===
+// ================= Handlers =================
 
+// --- Users ---
+func createUserHandler(c *gin.Context) {
+	var user map[string]interface{}
+	if err := c.BindJSON(&user); err != nil {
+		c.String(http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+	user["createdAt"] = time.Now()
+
+	_, err := usersCollection.InsertOne(context.Background(), user)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to create user")
+		return
+	}
+	c.String(http.StatusOK, "User created successfully")
+}
+
+func loginHandler(c *gin.Context) {
+	var req map[string]string
+	if err := c.BindJSON(&req); err != nil {
+		c.String(http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	filter := bson.M{"email": req["email"], "password": req["password"]}
+	var user map[string]interface{}
+	if err := usersCollection.FindOne(context.Background(), filter).Decode(&user); err != nil {
+		c.String(http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
+	c.JSON(http.StatusOK, user)
+}
+
+// --- Timeline ---
+func getPostsHandler(c *gin.Context) {
+	cursor, err := postsCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to fetch posts")
+		return
+	}
+	var posts []bson.M
+	cursor.All(context.Background(), &posts)
+	c.JSON(http.StatusOK, posts)
+}
+
+func uploadPostHandler(c *gin.Context) {
+	var post map[string]interface{}
+	if err := c.BindJSON(&post); err != nil {
+		c.String(http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+	post["createdAt"] = time.Now()
+
+	_, err := postsCollection.InsertOne(context.Background(), post)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to upload post")
+		return
+	}
+	c.JSON(http.StatusOK, post)
+}
+
+// --- Chat ---
+func getMessagesHandler(c *gin.Context) {
+	cursor, err := messagesCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to fetch messages")
+		return
+	}
+	var messages []bson.M
+	cursor.All(context.Background(), &messages)
+	c.JSON(http.StatusOK, messages)
+}
+
+func sendMessageHandler(c *gin.Context) {
+	var msg map[string]string
+	if err := c.BindJSON(&msg); err != nil {
+		c.String(http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+	msg["createdAt"] = time.Now().Format(time.RFC3339)
+
+	_, err := messagesCollection.InsertOne(context.Background(), msg)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to send message")
+		return
+	}
+
+	// Broadcast to WebSocket clients
+	server.BroadcastToNamespace("/", "chatMessage", msg)
+	c.JSON(http.StatusOK, msg)
+}
+
+// --- Payments ---
 func addPaymentHandler(c *gin.Context) {
 	var payment map[string]interface{}
 	if err := c.BindJSON(&payment); err != nil {
@@ -122,7 +231,7 @@ func addPaymentHandler(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "Failed to add payment")
 		return
 	}
-	c.String(http.StatusOK, "Payment added successfully")
+	c.JSON(http.StatusOK, payment)
 }
 
 func getPaymentsHandler(c *gin.Context) {
@@ -135,15 +244,3 @@ func getPaymentsHandler(c *gin.Context) {
 	cursor.All(context.Background(), &payments)
 	c.JSON(http.StatusOK, payments)
 }
-
-// === Placeholder Handlers ===
-
-func getPostsHandler(c *gin.Context)       { c.String(http.StatusOK, "getPostsHandler") }
-func uploadPostHandler(c *gin.Context)     { c.String(http.StatusOK, "uploadPostHandler") }
-func getMessagesHandler(c *gin.Context)    { c.String(http.StatusOK, "getMessagesHandler") }
-func sendMessageHandler(c *gin.Context)    { c.String(http.StatusOK, "sendMessageHandler") }
-func getModulesHandler(c *gin.Context)     { c.String(http.StatusOK, "getModulesHandler") }
-func uploadModuleHandler(c *gin.Context)   { c.String(http.StatusOK, "uploadModuleHandler") }
-func serveFileHandler(c *gin.Context)      { c.String(http.StatusOK, "serveFileHandler") }
-func addEvaluationHandler(c *gin.Context)  { c.String(http.StatusOK, "addEvaluationHandler") }
-func getEvaluationsHandler(c *gin.Context) { c.String(http.StatusOK, "getEvaluationsHandler") }
