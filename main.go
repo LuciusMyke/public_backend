@@ -28,51 +28,43 @@ var (
 )
 
 func main() {
-	// Load environment variables
-	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ No .env file found, using system environment variables")
-	}
+	// Load .env
+	godotenv.Load()
 
 	mongoURI := os.Getenv("MONGO_URI")
 	if mongoURI == "" {
-		log.Fatal("❌ MONGO_URI not set")
+		log.Fatal("MONGO_URI not set")
 	}
 
-	// Connect to MongoDB
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		log.Fatal("❌ MongoDB connect failed:", err)
+		log.Fatal(err)
 	}
 	defer client.Disconnect(context.Background())
-
-	if err := client.Ping(context.Background(), nil); err != nil {
-		log.Fatal("❌ MongoDB ping failed:", err)
-	}
-	log.Println("✅ MongoDB connected successfully")
-
 	db := client.Database("admin1")
+
+	// Collections
 	usersCollection = db.Collection("users")
 	postsCollection = db.Collection("posts")
 	messagesCollection = db.Collection("messages")
 	paymentCollection = db.Collection("payments")
 	modulesCollection = db.Collection("modules")
 
-	// Setup Socket.IO
+	// Socket.IO server
 	server = socketio.NewServer(nil)
-
 	server.OnConnect("/", func(s socketio.Conn) error {
 		log.Println("✅ WebSocket connected:", s.ID())
 		return nil
 	})
 
 	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
-		// Save message to MongoDB
+		// msg must include: senderId, receiverId, message
+		msg["createdAt"] = time.Now().Format(time.RFC3339)
 		_, err := messagesCollection.InsertOne(context.Background(), msg)
 		if err != nil {
 			log.Println("❌ Failed to save chat message:", err)
 			return
 		}
-		// Broadcast to all clients
 		server.BroadcastToNamespace("/", "chatMessage", msg)
 	})
 
@@ -83,9 +75,8 @@ func main() {
 	go server.Serve()
 	defer server.Close()
 
-	// Setup Gin
+	// Gin setup
 	r := gin.Default()
-
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:1420", "https://publicbackend-production.up.railway.app"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -95,27 +86,27 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// Socket.IO routes
+	// Socket.IO
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
 
-	// User routes
+	// --- User routes ---
 	r.POST("/createUser", createUserHandler)
 	r.POST("/login", loginHandler)
 
-	// Timeline routes
+	// --- Timeline routes ---
 	r.GET("/getPosts", getPostsHandler)
 	r.POST("/uploadPost", uploadPostHandler)
 
-	// Chat routes
-	r.GET("/getMessages", getMessagesHandler)
+	// --- Chat routes ---
+	r.GET("/getMessages", getMessagesHandler) // filters by userId if provided
 	r.POST("/sendMessage", sendMessageHandler)
 
-	// Payment routes
+	// --- Payments ---
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
 
-	// Module routes
+	// --- Modules ---
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
 	r.DELETE("/deleteModule", deleteModuleHandler)
@@ -126,9 +117,7 @@ func main() {
 		port = "8084"
 	}
 	log.Println("🚀 Server running on port:", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatal("❌ Server failed:", err)
-	}
+	r.Run(":" + port)
 }
 
 // ================= Handlers =================
@@ -194,7 +183,15 @@ func uploadPostHandler(c *gin.Context) {
 
 // --- Chat ---
 func getMessagesHandler(c *gin.Context) {
-	cursor, err := messagesCollection.Find(context.Background(), bson.M{})
+	userId := c.Query("userId")
+	filter := bson.M{}
+	if userId != "" {
+		filter = bson.M{"$or": []bson.M{
+			{"senderId": userId},
+			{"receiverId": userId},
+		}}
+	}
+	cursor, err := messagesCollection.Find(context.Background(), filter)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to fetch messages")
 		return
@@ -211,13 +208,11 @@ func sendMessageHandler(c *gin.Context) {
 		return
 	}
 	msg["createdAt"] = time.Now().Format(time.RFC3339)
-
 	_, err := messagesCollection.InsertOne(context.Background(), msg)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to send message")
 		return
 	}
-
 	server.BroadcastToNamespace("/", "chatMessage", msg)
 	c.JSON(http.StatusOK, msg)
 }
@@ -258,13 +253,8 @@ func uploadModuleHandler(c *gin.Context) {
 		return
 	}
 
-	// Save file locally
 	savePath := "./uploads/" + fileHeader.Filename
-	if err := os.MkdirAll("./uploads", os.ModePerm); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create directory")
-		return
-	}
-
+	os.MkdirAll("./uploads", os.ModePerm)
 	if err := c.SaveUploadedFile(fileHeader, savePath); err != nil {
 		c.String(http.StatusInternalServerError, "Failed to save file")
 		return
@@ -282,11 +272,7 @@ func uploadModuleHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"id":      res.InsertedID,
-		"title":   title,
-		"fileUrl": savePath,
-	})
+	c.JSON(http.StatusOK, gin.H{"id": res.InsertedID, "title": title, "fileUrl": savePath})
 }
 
 func getModulesHandler(c *gin.Context) {
@@ -302,35 +288,23 @@ func getModulesHandler(c *gin.Context) {
 
 func deleteModuleHandler(c *gin.Context) {
 	id := c.Query("id")
-	if id == "" {
-		c.String(http.StatusBadRequest, "Module ID required")
-		return
-	}
-
 	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		c.String(http.StatusBadRequest, "Invalid module ID")
 		return
 	}
-
-	// Find module
 	var module bson.M
 	if err := modulesCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&module); err != nil {
 		c.String(http.StatusNotFound, "Module not found")
 		return
 	}
-
-	// Delete file
 	if filePath, ok := module["fileUrl"].(string); ok {
 		os.Remove(filePath)
 	}
-
-	// Delete from DB
 	_, err = modulesCollection.DeleteOne(context.Background(), bson.M{"_id": objID})
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to delete module")
 		return
 	}
-
 	c.String(http.StatusOK, "Module deleted successfully")
 }
