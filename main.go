@@ -3,15 +3,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
-	socketio "github.com/googollee/go-socket.io"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	socketio "github.com/googollee/go-socket.io"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
