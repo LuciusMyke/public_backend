@@ -77,7 +77,7 @@ func main() {
 		s.Emit("chatMessage", msg)
 
 		// Broadcast to all other clients (Tauri, other mobile clients)
-		s.BroadcastToNamespace("/", "chatMessage", msg)
+		server.BroadcastToNamespace("/", "chatMessage", msg)
 	})
 
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
