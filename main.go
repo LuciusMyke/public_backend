@@ -25,6 +25,9 @@ var (
 	paymentCollection  *mongo.Collection
 	modulesCollection  *mongo.Collection
 	server             *socketio.Server
+
+	// Map to track connected users
+	connectedUsers = make(map[string]socketio.Conn)
 )
 
 func main() {
@@ -65,11 +68,6 @@ func main() {
 		return nil
 	})
 
-	// ===== Add-on for per-user filtered broadcasting =====
-
-	// Map to track connected users and their sockets
-	var connectedUsers = make(map[string]socketio.Conn)
-
 	// Register user UID after connection
 	server.OnEvent("/", "register", func(s socketio.Conn, uid string) {
 		if uid != "" {
@@ -78,9 +76,9 @@ func main() {
 		}
 	})
 
-	// Override chatMessage event for per-user emission
+	// Handle chatMessage
 	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
-		// Save to MongoDB
+		// Save message to MongoDB
 		_, err := messagesCollection.InsertOne(context.Background(), msg)
 		if err != nil {
 			log.Println("❌ Failed to save chat message:", err)
@@ -90,18 +88,17 @@ func main() {
 		senderID := msg["senderId"]
 		receiverID := msg["receiverId"]
 
-		// Send to sender (so they see their own message)
+		// Emit to sender
 		if conn, ok := connectedUsers[senderID]; ok {
 			conn.Emit("chatMessage", msg)
 		}
 
-		// Send to receiver only
+		// Emit to receiver
 		if conn, ok := connectedUsers[receiverID]; ok {
 			conn.Emit("chatMessage", msg)
 		}
 	})
 
-	// Remove user from map on disconnect
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
 		log.Println("❌ WebSocket disconnected:", reason)
 		for uid, conn := range connectedUsers {
@@ -134,9 +131,9 @@ func main() {
 	// User routes
 	r.POST("/createUser", createUserHandler)
 	r.POST("/login", loginHandler)
-	r.POST("/user", getUserProfileHandler)     // <-- New
-	r.GET("/getUsers", getUsersHandler)        // <-- New
-	r.DELETE("/deleteUser", deleteUserHandler) // <-- New
+	r.POST("/user", getUserProfileHandler)
+	r.GET("/getUsers", getUsersHandler)
+	r.DELETE("/deleteUser", deleteUserHandler)
 
 	// Timeline routes
 	r.GET("/getPosts", getPostsHandler)
@@ -200,7 +197,7 @@ func loginHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// --- New: get user profile by UID ---
+// --- User profile ---
 func getUserProfileHandler(c *gin.Context) {
 	var req struct {
 		UID string `json:"uid"`
@@ -219,7 +216,6 @@ func getUserProfileHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// --- New: get all users ---
 func getUsersHandler(c *gin.Context) {
 	cursor, err := usersCollection.Find(context.Background(), bson.M{})
 	if err != nil {
@@ -231,7 +227,6 @@ func getUsersHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-// --- New: delete user by UID ---
 func deleteUserHandler(c *gin.Context) {
 	var req struct {
 		UID string `json:"uid"`
@@ -297,13 +292,26 @@ func sendMessageHandler(c *gin.Context) {
 	}
 	msg["createdAt"] = time.Now().Format(time.RFC3339)
 
+	// Save to MongoDB
 	_, err := messagesCollection.InsertOne(context.Background(), msg)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to send message")
 		return
 	}
 
-	server.BroadcastToNamespace("/", "chatMessage", msg)
+	senderID := msg["senderId"]
+	receiverID := msg["receiverId"]
+
+	// Emit to sender
+	if conn, ok := connectedUsers[senderID]; ok {
+		conn.Emit("chatMessage", msg)
+	}
+
+	// Emit to receiver
+	if conn, ok := connectedUsers[receiverID]; ok {
+		conn.Emit("chatMessage", msg)
+	}
+
 	c.JSON(http.StatusOK, msg)
 }
 
