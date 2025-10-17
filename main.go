@@ -65,23 +65,51 @@ func main() {
 		return nil
 	})
 
+	// ===== Add-on for per-user filtered broadcasting =====
+
+	// Map to track connected users and their sockets
+	var connectedUsers = make(map[string]socketio.Conn)
+
+	// Register user UID after connection
+	server.OnEvent("/", "register", func(s socketio.Conn, uid string) {
+		if uid != "" {
+			connectedUsers[uid] = s
+			log.Println("Registered UID:", uid, "with socket:", s.ID())
+		}
+	})
+
+	// Override chatMessage event for per-user emission
 	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
-		// Save message to MongoDB
+		// Save to MongoDB
 		_, err := messagesCollection.InsertOne(context.Background(), msg)
 		if err != nil {
 			log.Println("❌ Failed to save chat message:", err)
 			return
 		}
 
-		// Emit back to the sender (so their UI updates)
-		s.Emit("chatMessage", msg)
+		senderID := msg["senderId"]
+		receiverID := msg["receiverId"]
 
-		// Broadcast to all other clients (Tauri, other mobile clients)
-		server.BroadcastToNamespace("/", "chatMessage", msg)
+		// Send to sender (so they see their own message)
+		if conn, ok := connectedUsers[senderID]; ok {
+			conn.Emit("chatMessage", msg)
+		}
+
+		// Send to receiver only
+		if conn, ok := connectedUsers[receiverID]; ok {
+			conn.Emit("chatMessage", msg)
+		}
 	})
 
+	// Remove user from map on disconnect
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
 		log.Println("❌ WebSocket disconnected:", reason)
+		for uid, conn := range connectedUsers {
+			if conn.ID() == s.ID() {
+				delete(connectedUsers, uid)
+				break
+			}
+		}
 	})
 
 	go server.Serve()
