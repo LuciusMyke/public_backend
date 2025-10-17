@@ -66,12 +66,18 @@ func main() {
 	})
 
 	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
+		// Save message to MongoDB
 		_, err := messagesCollection.InsertOne(context.Background(), msg)
 		if err != nil {
 			log.Println("❌ Failed to save chat message:", err)
 			return
 		}
-		server.BroadcastToNamespace("/", "chatMessage", msg)
+
+		// Emit back to the sender (so their UI updates)
+		s.Emit("chatMessage", msg)
+
+		// Broadcast to all other clients (Tauri, other mobile clients)
+		s.BroadcastToNamespace("/", "chatMessage", msg)
 	})
 
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
