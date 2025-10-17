@@ -66,13 +66,11 @@ func main() {
 	})
 
 	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
-		// Save message to MongoDB
 		_, err := messagesCollection.InsertOne(context.Background(), msg)
 		if err != nil {
 			log.Println("❌ Failed to save chat message:", err)
 			return
 		}
-		// Broadcast to all clients
 		server.BroadcastToNamespace("/", "chatMessage", msg)
 	})
 
@@ -102,6 +100,9 @@ func main() {
 	// User routes
 	r.POST("/createUser", createUserHandler)
 	r.POST("/login", loginHandler)
+	r.POST("/user", getUserProfileHandler)     // <-- New
+	r.GET("/getUsers", getUsersHandler)        // <-- New
+	r.DELETE("/deleteUser", deleteUserHandler) // <-- New
 
 	// Timeline routes
 	r.GET("/getPosts", getPostsHandler)
@@ -163,6 +164,56 @@ func loginHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, user)
+}
+
+// --- New: get user profile by UID ---
+func getUserProfileHandler(c *gin.Context) {
+	var req struct {
+		UID string `json:"uid"`
+	}
+	if err := c.BindJSON(&req); err != nil || req.UID == "" {
+		c.String(http.StatusBadRequest, "UID required")
+		return
+	}
+
+	var user bson.M
+	if err := usersCollection.FindOne(context.Background(), bson.M{"uid": req.UID}).Decode(&user); err != nil {
+		c.String(http.StatusNotFound, "User not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
+}
+
+// --- New: get all users ---
+func getUsersHandler(c *gin.Context) {
+	cursor, err := usersCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to fetch users")
+		return
+	}
+	var users []bson.M
+	cursor.All(context.Background(), &users)
+	c.JSON(http.StatusOK, users)
+}
+
+// --- New: delete user by UID ---
+func deleteUserHandler(c *gin.Context) {
+	var req struct {
+		UID string `json:"uid"`
+	}
+	if err := c.BindJSON(&req); err != nil || req.UID == "" {
+		c.String(http.StatusBadRequest, "UID required")
+		return
+	}
+
+	_, err := usersCollection.DeleteOne(context.Background(), bson.M{"uid": req.UID})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to delete user")
+		return
+	}
+
+	c.String(http.StatusOK, "User deleted successfully")
 }
 
 // --- Timeline ---
@@ -258,7 +309,6 @@ func uploadModuleHandler(c *gin.Context) {
 		return
 	}
 
-	// Save file locally
 	savePath := "./uploads/" + fileHeader.Filename
 	if err := os.MkdirAll("./uploads", os.ModePerm); err != nil {
 		c.String(http.StatusInternalServerError, "Failed to create directory")
@@ -313,19 +363,16 @@ func deleteModuleHandler(c *gin.Context) {
 		return
 	}
 
-	// Find module
 	var module bson.M
 	if err := modulesCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&module); err != nil {
 		c.String(http.StatusNotFound, "Module not found")
 		return
 	}
 
-	// Delete file
 	if filePath, ok := module["fileUrl"].(string); ok {
 		os.Remove(filePath)
 	}
 
-	// Delete from DB
 	_, err = modulesCollection.DeleteOne(context.Background(), bson.M{"_id": objID})
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to delete module")
