@@ -287,13 +287,13 @@ func sendMessageHandler(c *gin.Context) {
 
 	// Emit to sender
 	if conn, ok := connectedUsers[senderID]; ok {
-		conn.Emit("chatMessage", msg)
+		conn.Emit("receive_message", msg) // ✅ unified event name
 		log.Println("📤 Sent to sender:", senderID)
 	}
 
 	// Emit to receiver
 	if conn, ok := connectedUsers[receiverID]; ok {
-		conn.Emit("chatMessage", msg)
+		conn.Emit("receive_message", msg) // ✅ unified event name
 		log.Println("📥 Sent to receiver:", receiverID)
 	} else {
 		log.Println("⚠️ Receiver not connected:", receiverID)
