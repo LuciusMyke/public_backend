@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -76,29 +77,7 @@ func main() {
 		}
 	})
 
-	// Handle chatMessage
-	server.OnEvent("/", "chatMessage", func(s socketio.Conn, msg map[string]string) {
-		// Save message to MongoDB
-		_, err := messagesCollection.InsertOne(context.Background(), msg)
-		if err != nil {
-			log.Println("❌ Failed to save chat message:", err)
-			return
-		}
-
-		senderID := msg["senderId"]
-		receiverID := msg["receiverId"]
-
-		// Emit to sender
-		if conn, ok := connectedUsers[senderID]; ok {
-			conn.Emit("chatMessage", msg)
-		}
-
-		// Emit to receiver
-		if conn, ok := connectedUsers[receiverID]; ok {
-			conn.Emit("chatMessage", msg)
-		}
-	})
-
+	// Handle disconnection
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
 		log.Println("❌ WebSocket disconnected:", reason)
 		for uid, conn := range connectedUsers {
@@ -114,7 +93,6 @@ func main() {
 
 	// Setup Gin
 	r := gin.Default()
-
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:1420", "https://publicbackend-production.up.railway.app"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -128,26 +106,22 @@ func main() {
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
 
-	// User routes
+	// API routes
 	r.POST("/createUser", createUserHandler)
 	r.POST("/login", loginHandler)
 	r.POST("/user", getUserProfileHandler)
 	r.GET("/getUsers", getUsersHandler)
 	r.DELETE("/deleteUser", deleteUserHandler)
 
-	// Timeline routes
 	r.GET("/getPosts", getPostsHandler)
 	r.POST("/uploadPost", uploadPostHandler)
 
-	// Chat routes
 	r.GET("/getMessages", getMessagesHandler)
 	r.POST("/sendMessage", sendMessageHandler)
 
-	// Payment routes
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
 
-	// Module routes
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
 	r.DELETE("/deleteModule", deleteModuleHandler)
@@ -285,11 +259,20 @@ func getMessagesHandler(c *gin.Context) {
 }
 
 func sendMessageHandler(c *gin.Context) {
-	var msg map[string]string
+	var msg map[string]interface{}
 	if err := c.BindJSON(&msg); err != nil {
 		c.String(http.StatusBadRequest, "Invalid JSON")
 		return
 	}
+
+	// 🔧 Normalize for both RN and Tauri
+	if msg["senderId"] == nil && msg["sender"] != nil {
+		msg["senderId"] = msg["sender"]
+	}
+	if msg["receiverId"] == nil && msg["receiver"] != nil {
+		msg["receiverId"] = msg["receiver"]
+	}
+
 	msg["createdAt"] = time.Now().Format(time.RFC3339)
 
 	// Save to MongoDB
@@ -299,17 +282,21 @@ func sendMessageHandler(c *gin.Context) {
 		return
 	}
 
-	senderID := msg["senderId"]
-	receiverID := msg["receiverId"]
+	senderID := fmt.Sprint(msg["senderId"])
+	receiverID := fmt.Sprint(msg["receiverId"])
 
 	// Emit to sender
 	if conn, ok := connectedUsers[senderID]; ok {
 		conn.Emit("chatMessage", msg)
+		log.Println("📤 Sent to sender:", senderID)
 	}
 
 	// Emit to receiver
 	if conn, ok := connectedUsers[receiverID]; ok {
 		conn.Emit("chatMessage", msg)
+		log.Println("📥 Sent to receiver:", receiverID)
+	} else {
+		log.Println("⚠️ Receiver not connected:", receiverID)
 	}
 
 	c.JSON(http.StatusOK, msg)
