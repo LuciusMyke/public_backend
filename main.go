@@ -31,6 +31,7 @@ var (
 	// Map to track connected users
 	connectedUsers = make(map[string]socketio.Conn)
 )
+var BACKEND_URL = "https://publicbackend-production.up.railway.app"
 
 func main() {
 	// Load environment variables
@@ -104,6 +105,19 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
+	// Module struct
+type Module struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	Title     string             `bson:"title" json:"title"`
+	FileUrl   string             `bson:"fileUrl" json:"fileUrl"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+}
+
+
+
+
+
+
 	// Socket.IO routes
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
@@ -137,6 +151,8 @@ func main() {
 	r.GET("/getGrades", getGradesHandler)
 	r.DELETE("/deleteGrade", deleteGradeHandler)
 
+	
+r.Static("/uploads", "./uploads")
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -382,44 +398,63 @@ func updatePaymentMonthHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Month updated successfully")
 }
 
-// --- Modules ---
 func uploadModuleHandler(c *gin.Context) {
 	title := c.PostForm("title")
-	fileHeader, err := c.FormFile("file")
+
+	file, err := c.FormFile("file")
 	if err != nil {
 		c.String(http.StatusBadRequest, "File not provided")
 		return
 	}
 
-	savePath := "./uploads/" + fileHeader.Filename
-	if err := os.MkdirAll("./uploads", os.ModePerm); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create directory")
-		return
+	// Ensure uploads folder exists
+	if _, err := os.Stat("./uploads"); os.IsNotExist(err) {
+		os.Mkdir("./uploads", os.ModePerm)
 	}
 
-	if err := c.SaveUploadedFile(fileHeader, savePath); err != nil {
+	// Save file
+	filename := filepath.Base(file.Filename)
+	savePath := "./uploads/" + filename
+	if err := c.SaveUploadedFile(file, savePath); err != nil {
 		c.String(http.StatusInternalServerError, "Failed to save file")
 		return
 	}
 
-	module := map[string]interface{}{
-		"title":     title,
-		"fileUrl":   savePath,
-		"createdAt": time.Now(),
+	// Generate public URL
+	publicUrl := fmt.Sprintf("%s/uploads/%s", BACKEND_URL, filename)
+
+	// Insert module into MongoDB
+	module := Module{
+		Title:     title,
+		FileUrl:   publicUrl,
+		CreatedAt: time.Now(),
 	}
 
 	res, err := modulesCollection.InsertOne(context.Background(), module)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to save module in DB")
+		c.String(http.StatusInternalServerError, "DB insert failed")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"id":      res.InsertedID,
-		"title":   title,
-		"fileUrl": savePath,
-	})
+	module.ID = res.InsertedID.(primitive.ObjectID)
+	c.JSON(http.StatusOK, module)
 }
+
+func getModulesHandler(c *gin.Context) {
+	cursor, err := modulesCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to fetch modules")
+		return
+	}
+	var modules []Module
+	if err := cursor.All(context.Background(), &modules); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to decode modules")
+		return
+	}
+	c.JSON(http.StatusOK, modules)
+}
+
+
 
 func getModulesHandler(c *gin.Context) {
 	cursor, err := modulesCollection.Find(context.Background(), bson.M{})
