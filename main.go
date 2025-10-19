@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 	"time"
-
+	"path/filepath"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	socketio "github.com/googollee/go-socket.io"
@@ -151,7 +151,7 @@ type Module struct {
 	r.GET("/getGrades", getGradesHandler)
 	r.DELETE("/deleteGrade", deleteGradeHandler)
 
-	
+
 r.Static("/uploads", "./uploads")
 	// Start server
 	port := os.Getenv("PORT")
