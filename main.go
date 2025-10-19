@@ -464,22 +464,43 @@ func deleteModuleHandler(c *gin.Context) {
 
 // ================= Grades Handlers =================
 func uploadGradeHandler(c *gin.Context) {
-	var grade map[string]interface{}
-	if err := c.BindJSON(&grade); err != nil {
-		c.String(http.StatusBadRequest, "Invalid JSON")
-		return
-	}
+    studentId := c.PostForm("studentId")
+    studentEmail := c.PostForm("studentEmail")
+    note := c.PostForm("note")
 
-	grade["createdAt"] = time.Now()
-	res, err := gradesCollection.InsertOne(context.Background(), grade)
-	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to add grade")
-		return
-	}
+    fileHeader, err := c.FormFile("file")
+    filePath := ""
+    if err == nil && fileHeader != nil {
+        // Save file
+        if err := os.MkdirAll("./uploads/grades", os.ModePerm); err != nil {
+            c.String(http.StatusInternalServerError, "Failed to create directory")
+            return
+        }
+        filePath = "./uploads/grades/" + fileHeader.Filename
+        if err := c.SaveUploadedFile(fileHeader, filePath); err != nil {
+            c.String(http.StatusInternalServerError, "Failed to save file")
+            return
+        }
+    }
 
-	grade["_id"] = res.InsertedID
-	c.JSON(http.StatusOK, grade)
+    grade := map[string]interface{}{
+        "studentId":    studentId,
+        "studentEmail": studentEmail,
+        "note":         note,
+        "fileUrl":      filePath,
+        "createdAt":    time.Now(),
+    }
+
+    res, err := gradesCollection.InsertOne(context.Background(), grade)
+    if err != nil {
+        c.String(http.StatusInternalServerError, "Failed to add grade")
+        return
+    }
+
+    grade["_id"] = res.InsertedID
+    c.JSON(http.StatusOK, grade)
 }
+
 
 func getGradesHandler(c *gin.Context) {
 	cursor, err := gradesCollection.Find(context.Background(), bson.M{})
