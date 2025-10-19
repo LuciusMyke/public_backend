@@ -117,6 +117,8 @@ func main() {
 
 	r.GET("/getPosts", getPostsHandler)
 	r.POST("/uploadPost", uploadPostHandler)
+	r.DELETE("/deletePost", deletePostHandler)
+
 
 	r.GET("/getMessages", getMessagesHandler)
 	r.POST("/sendMessage", sendMessageHandler)
@@ -533,4 +535,25 @@ func deleteGradeHandler(c *gin.Context) {
 	}
 
 	c.String(http.StatusOK, "Grade deleted successfully")
+}
+func deletePostHandler(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.String(http.StatusBadRequest, "Post ID required")
+		return
+	}
+
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		c.String(http.StatusBadRequest, "Invalid post ID")
+		return
+	}
+
+	_, err = postsCollection.DeleteOne(context.Background(), bson.M{"_id": objID})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to delete post")
+		return
+	}
+
+	c.String(http.StatusOK, "Post deleted successfully")
 }
