@@ -25,6 +25,7 @@ var (
 	messagesCollection *mongo.Collection
 	paymentCollection  *mongo.Collection
 	modulesCollection  *mongo.Collection
+	gradesCollection   *mongo.Collection
 	server             *socketio.Server
 
 	// Map to track connected users
@@ -60,6 +61,7 @@ func main() {
 	messagesCollection = db.Collection("messages")
 	paymentCollection = db.Collection("payments")
 	modulesCollection = db.Collection("modules")
+	gradesCollection = db.Collection("grades") // <-- new collection for grades
 
 	// Setup Socket.IO
 	server = socketio.NewServer(nil)
@@ -124,9 +126,15 @@ func main() {
 	r.GET("/getPayments", getPaymentsHandler)
 	r.PATCH("/updatePaymentMonth", updatePaymentMonthHandler)
 
+	// Modules
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
 	r.DELETE("/deleteModule", deleteModuleHandler)
+
+	// Grades (new)
+	r.POST("/uploadGrade", uploadGradeHandler)
+	r.GET("/getGrades", getGradesHandler)
+	r.DELETE("/deleteGrade", deleteGradeHandler)
 
 	// Start server
 	port := os.Getenv("PORT")
@@ -453,4 +461,104 @@ func deleteModuleHandler(c *gin.Context) {
 	}
 
 	c.String(http.StatusOK, "Module deleted successfully")
+}
+
+// --- Grades (new) ---
+
+// uploadGradeHandler expects multipart/form-data with fields:
+// - studentId (string)
+// - studentEmail (string)
+// - note (optional)
+// - file (the grade file)
+func uploadGradeHandler(c *gin.Context) {
+	studentId := c.PostForm("studentId")
+	studentEmail := c.PostForm("studentEmail")
+	note := c.PostForm("note")
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.String(http.StatusBadRequest, "File not provided")
+		return
+	}
+
+	saveDir := "./uploads/grades/"
+	if err := os.MkdirAll(saveDir, os.ModePerm); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to create directory")
+		return
+	}
+
+	savePath := saveDir + fileHeader.Filename
+	if err := c.SaveUploadedFile(fileHeader, savePath); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to save file")
+		return
+	}
+
+	grade := map[string]interface{}{
+		"studentId":    studentId,
+		"studentEmail": studentEmail,
+		"note":         note,
+		"fileUrl":      savePath,
+		"createdAt":    time.Now(),
+	}
+
+	res, err := gradesCollection.InsertOne(context.Background(), grade)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to save grade in DB")
+		// try to remove saved file on error
+		_ = os.Remove(savePath)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":      res.InsertedID,
+		"studentId": studentId,
+		"studentEmail": studentEmail,
+		"note":    note,
+		"fileUrl": savePath,
+	})
+}
+
+// getGradesHandler returns all grade documents
+func getGradesHandler(c *gin.Context) {
+	cursor, err := gradesCollection.Find(context.Background(), bson.M{})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to fetch grades")
+		return
+	}
+	var grades []bson.M
+	cursor.All(context.Background(), &grades)
+	c.JSON(http.StatusOK, grades)
+}
+
+// deleteGradeHandler deletes a grade document by id and removes file from disk
+func deleteGradeHandler(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.String(http.StatusBadRequest, "Grade ID required")
+		return
+	}
+
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		c.String(http.StatusBadRequest, "Invalid grade ID")
+		return
+	}
+
+	var grade bson.M
+	if err := gradesCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&grade); err != nil {
+		c.String(http.StatusNotFound, "Grade not found")
+		return
+	}
+
+	if filePath, ok := grade["fileUrl"].(string); ok {
+		_ = os.Remove(filePath) // ignore remove error
+	}
+
+	_, err = gradesCollection.DeleteOne(context.Background(), bson.M{"_id": objID})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to delete grade")
+		return
+	}
+
+	c.String(http.StatusOK, "Grade deleted successfully")
 }
