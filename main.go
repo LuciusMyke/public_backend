@@ -32,6 +32,12 @@ var (
 	connectedUsers = make(map[string]socketio.Conn)
 )
 var BACKEND_URL = "https://publicbackend-production.up.railway.app"
+type Module struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	Title     string             `bson:"title" json:"title"`
+	FileUrl   string             `bson:"fileUrl" json:"fileUrl"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+}
 
 func main() {
 	// Load environment variables
@@ -106,12 +112,6 @@ func main() {
 	}))
 
 	// Module struct
-type Module struct {
-	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
-	Title     string             `bson:"title" json:"title"`
-	FileUrl   string             `bson:"fileUrl" json:"fileUrl"`
-	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
-}
 
 
 
