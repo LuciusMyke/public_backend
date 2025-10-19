@@ -119,8 +119,10 @@ func main() {
 	r.GET("/getMessages", getMessagesHandler)
 	r.POST("/sendMessage", sendMessageHandler)
 
+	// Payments
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
+	r.PATCH("/updatePaymentMonth", updatePaymentMonthHandler)
 
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
@@ -287,13 +289,13 @@ func sendMessageHandler(c *gin.Context) {
 
 	// Emit to sender
 	if conn, ok := connectedUsers[senderID]; ok {
-		conn.Emit("receive_message", msg) // ✅ unified event name
+		conn.Emit("receive_message", msg)
 		log.Println("📤 Sent to sender:", senderID)
 	}
 
 	// Emit to receiver
 	if conn, ok := connectedUsers[receiverID]; ok {
-		conn.Emit("receive_message", msg) // ✅ unified event name
+		conn.Emit("receive_message", msg)
 		log.Println("📥 Sent to receiver:", receiverID)
 	} else {
 		log.Println("⚠️ Receiver not connected:", receiverID)
@@ -303,18 +305,32 @@ func sendMessageHandler(c *gin.Context) {
 }
 
 // --- Payments ---
+// Enhanced addPayment with monthly default
 func addPaymentHandler(c *gin.Context) {
 	var payment map[string]interface{}
 	if err := c.BindJSON(&payment); err != nil {
 		c.String(http.StatusBadRequest, "Invalid JSON")
 		return
 	}
+
+	// Default monthly structure if not provided
+	if _, ok := payment["monthly"].(map[string]interface{}); !ok {
+		payment["monthly"] = map[string]string{
+			"june": "Pending", "july": "Pending", "august": "Pending",
+			"september": "Pending", "october": "Pending", "november": "Pending",
+			"december": "Pending", "january": "Pending", "february": "Pending",
+			"march": "Pending",
+		}
+	}
+
 	payment["createdAt"] = time.Now()
-	_, err := paymentCollection.InsertOne(context.Background(), payment)
+	res, err := paymentCollection.InsertOne(context.Background(), payment)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to add payment")
 		return
 	}
+
+	payment["_id"] = res.InsertedID
 	c.JSON(http.StatusOK, payment)
 }
 
@@ -327,6 +343,34 @@ func getPaymentsHandler(c *gin.Context) {
 	var payments []bson.M
 	cursor.All(context.Background(), &payments)
 	c.JSON(http.StatusOK, payments)
+}
+
+// PATCH to update a single month
+func updatePaymentMonthHandler(c *gin.Context) {
+	var req struct {
+		ID    string `json:"_id"`
+		Month string `json:"month"`
+		Value string `json:"value"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.String(http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	objID, err := primitive.ObjectIDFromHex(req.ID)
+	if err != nil {
+		c.String(http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	update := bson.M{"$set": bson.M{"monthly." + req.Month: req.Value}}
+	_, err = paymentCollection.UpdateOne(context.Background(), bson.M{"_id": objID}, update)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to update month")
+		return
+	}
+
+	c.String(http.StatusOK, "Month updated successfully")
 }
 
 // --- Modules ---
