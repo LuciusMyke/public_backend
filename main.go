@@ -456,16 +456,7 @@ func getModulesHandler(c *gin.Context) {
 
 
 
-func getModulesHandler(c *gin.Context) {
-	cursor, err := modulesCollection.Find(context.Background(), bson.M{})
-	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to fetch modules")
-		return
-	}
-	var modules []bson.M
-	cursor.All(context.Background(), &modules)
-	c.JSON(http.StatusOK, modules)
-}
+
 
 func deleteModuleHandler(c *gin.Context) {
 	id := c.Query("id")
