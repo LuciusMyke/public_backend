@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -36,6 +37,13 @@ var (
 )
 
 var BACKEND_URL = "https://publicbackend-production.up.railway.app"
+
+type Module struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	Title     string             `bson:"title" json:"title"`
+	FileUrl   string             `bson:"fileUrl" json:"fileUrl"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+}
 
 func main() {
 	// Load env
@@ -136,7 +144,7 @@ func main() {
 
 	// Grades endpoints (added)
 	r.POST("/uploadGrade", uploadGradeHandler)   // accepts JSON { userId, userName, photoUrl, note? }
-	r.GET("/getGrades", getGradesHandler)       // optional ?userId=<mongo_id>
+	r.GET("/getGrades", getGradesHandler)        // optional ?userId=<mongo_id>
 	r.DELETE("/deleteGrade", deleteGradeHandler) // ?id=<gradeObjectId>
 
 	// static uploads if you store local files (optional)
@@ -394,35 +402,45 @@ func updatePaymentMonthHandler(c *gin.Context) {
 // --- Modules ---
 func uploadModuleHandler(c *gin.Context) {
 	title := c.PostForm("title")
-	fileHeader, err := c.FormFile("file")
+
+	file, err := c.FormFile("file")
 	if err != nil {
 		c.String(http.StatusBadRequest, "File not provided")
 		return
 	}
-	if err := os.MkdirAll("./uploads", os.ModePerm); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create directory")
-		return
+
+	// Ensure uploads folder exists
+	if _, err := os.Stat("./uploads"); os.IsNotExist(err) {
+		os.Mkdir("./uploads", os.ModePerm)
 	}
-	savePath := "./uploads/" + fileHeader.Filename
-	if err := c.SaveUploadedFile(fileHeader, savePath); err != nil {
+
+	// Save file
+	filename := filepath.Base(file.Filename)
+	savePath := "./uploads/" + filename
+	if err := c.SaveUploadedFile(file, savePath); err != nil {
 		c.String(http.StatusInternalServerError, "Failed to save file")
 		return
 	}
-	module := map[string]interface{}{
-		"title":     title,
-		"fileUrl":   savePath,
-		"createdAt": time.Now(),
+
+	// Generate public URL
+	publicUrl := fmt.Sprintf("%s/uploads/%s", BACKEND_URL, filename)
+
+	// Insert module into MongoDB
+	module := Module{
+		Title:     title,
+		FileUrl:   publicUrl,
+		CreatedAt: time.Now(),
 	}
+
 	res, err := modulesCollection.InsertOne(context.Background(), module)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to save module in DB")
+		c.String(http.StatusInternalServerError, "DB insert failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"id":      res.InsertedID,
-		"title":   title,
-		"fileUrl": savePath,
-	})
+
+	module.ID = res.InsertedID.(primitive.ObjectID)
+	c.JSON(http.StatusOK, module)
+
 }
 
 func getModulesHandler(c *gin.Context) {
@@ -431,8 +449,11 @@ func getModulesHandler(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "Failed to fetch modules")
 		return
 	}
-	var modules []bson.M
-	cursor.All(context.Background(), &modules)
+	var modules []Module
+	if err := cursor.All(context.Background(), &modules); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to decode modules")
+		return
+	}
 	c.JSON(http.StatusOK, modules)
 }
 
