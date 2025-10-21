@@ -153,18 +153,51 @@ func main() {
 
 // ===== USERS =====
 func createUserHandler(c *gin.Context) {
-	var user map[string]interface{}
+	var user struct {
+		UID           string `json:"uid"`
+		Email         string `json:"email"`
+		Name          string `json:"name"`
+		Birthday      string `json:"birthday"`
+		Age           string `json:"age"`
+		Address       string `json:"address"`
+		MotherName    string `json:"motherName"`
+		FatherName    string `json:"fatherName"`
+		MotherOcc     string `json:"motherOcc"`
+		FatherOcc     string `json:"fatherOcc"`
+		MotherBday    string `json:"motherBday"`
+		FatherBday    string `json:"fatherBday"`
+		ContactNumber string `json:"contactNumber"`
+	}
+
 	if err := c.BindJSON(&user); err != nil {
-		c.String(http.StatusBadRequest, "Invalid JSON")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
-	user["createdAt"] = time.Now()
-	_, err := usersCollection.InsertOne(context.Background(), user)
+
+	doc := bson.M{
+		"uid":           user.UID,
+		"email":         user.Email,
+		"name":          user.Name,
+		"birthday":      user.Birthday,
+		"age":           user.Age,
+		"address":       user.Address,
+		"motherName":    user.MotherName,
+		"fatherName":    user.FatherName,
+		"motherOcc":     user.MotherOcc,
+		"fatherOcc":     user.FatherOcc,
+		"motherBday":    user.MotherBday,
+		"fatherBday":    user.FatherBday,
+		"contactNumber": user.ContactNumber,
+		"createdAt":     time.Now(),
+	}
+
+	_, err := usersCollection.InsertOne(context.Background(), doc)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create user")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		return
 	}
-	c.String(http.StatusOK, "User created successfully")
+
+	c.JSON(http.StatusOK, gin.H{"message": "User created successfully"})
 }
 
 func loginHandler(c *gin.Context) {
