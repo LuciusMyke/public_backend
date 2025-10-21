@@ -18,29 +18,22 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-
-	"golang.org/x/crypto/bcrypt"
-	"github.com/golang-jwt/jwt/v4"
 )
 
-// ====== GLOBALS ======
 var (
-	usersCollection       *mongo.Collection
-	adminUsersCollection  *mongo.Collection
-	postsCollection       *mongo.Collection
-	messagesCollection    *mongo.Collection
-	paymentCollection     *mongo.Collection
-	modulesCollection     *mongo.Collection
-	gradesCollection      *mongo.Collection
-	server                *socketio.Server
-	connectedUsers        = make(map[string]socketio.Conn)
-	mongoClient           *mongo.Client
-	jwtSecret             []byte
+	usersCollection    *mongo.Collection
+	postsCollection    *mongo.Collection
+	messagesCollection *mongo.Collection
+	paymentCollection  *mongo.Collection
+	modulesCollection  *mongo.Collection
+	gradesCollection   *mongo.Collection
+	server             *socketio.Server
+	connectedUsers     = make(map[string]socketio.Conn)
+	mongoClient        *mongo.Client
 )
 
 var BACKEND_URL = "https://publicbackend-production.up.railway.app"
 
-// ===== STRUCTS ======
 type Module struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Title     string             `bson:"title" json:"title"`
@@ -48,33 +41,15 @@ type Module struct {
 	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
 }
 
-// Admin login/register structs
-type creds struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type adminUser struct {
-	Username string `bson:"username"`
-	Password string `bson:"password"`
-}
-
-// ===== MAIN ======
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ No .env file found")
 	}
-
 	mongoURI := os.Getenv("MONGO_URI")
 	if mongoURI == "" {
 		log.Fatal("❌ MONGO_URI not set")
 	}
-	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
-	if len(jwtSecret) == 0 {
-		log.Fatal("❌ JWT_SECRET not set")
-	}
 
-	// MongoDB connect
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal("❌ MongoDB connect failed:", err)
@@ -89,25 +64,26 @@ func main() {
 
 	db := client.Database("admin1")
 	usersCollection = db.Collection("users")
-	adminUsersCollection = db.Collection("adminUsers")
 	postsCollection = db.Collection("posts")
 	messagesCollection = db.Collection("messages")
 	paymentCollection = db.Collection("payments")
 	modulesCollection = db.Collection("modules")
 	gradesCollection = db.Collection("grades")
 
-	// Websocket server
 	server = socketio.NewServer(nil)
+
 	server.OnConnect("/", func(s socketio.Conn) error {
 		log.Println("✅ WebSocket connected:", s.ID())
 		return nil
 	})
+
 	server.OnEvent("/", "register", func(s socketio.Conn, uid string) {
 		if uid != "" {
 			connectedUsers[uid] = s
 			log.Println("Registered UID:", uid, "with socket:", s.ID())
 		}
 	})
+
 	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
 		log.Println("❌ WebSocket disconnected:", reason)
 		for uid, conn := range connectedUsers {
@@ -117,12 +93,13 @@ func main() {
 			}
 		}
 	})
+
 	go server.Serve()
 	defer server.Close()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:1420", BACKEND_URL},
+		AllowOrigins:     []string{"http://localhost:1420", "https://publicbackend-production.up.railway.app"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -130,15 +107,10 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// Socket.IO
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
 
-	// ===== ADMIN AUTH =====
-	r.POST("/admin/register", adminRegisterHandler)
-	r.POST("/admin/login", adminLoginHandler)
-
-	// ===== USER & POST =====
+	// ========== USER & POST ==========
 	r.POST("/createUser", createUserHandler)
 	r.POST("/login", loginHandler)
 	r.POST("/user", getUserProfileHandler)
@@ -148,21 +120,21 @@ func main() {
 	r.POST("/uploadPost", uploadPostHandler)
 	r.DELETE("/deletePost", deletePostHandler)
 
-	// ===== CHAT =====
+	// ========== CHAT ==========
 	r.GET("/getMessages", getMessagesHandler)
 	r.POST("/sendMessage", sendMessageHandler)
 
-	// ===== PAYMENTS =====
+	// ========== PAYMENTS ==========
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
 	r.PATCH("/updatePaymentMonth", updatePaymentMonthHandler)
 
-	// ===== MODULES =====
+	// ========== MODULES ==========
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
 	r.DELETE("/deleteModule", deleteModuleHandler)
 
-	// ===== GRADES =====
+	// ========== GRADES ==========
 	r.POST("/uploadGrade", uploadGradeHandler)
 	r.GET("/getGrades", getGradesHandler)
 	r.DELETE("/deleteGrade", deleteGradeHandler)
@@ -174,79 +146,12 @@ func main() {
 		port = "8084"
 	}
 	log.Println("🚀 Server running on port:", port)
-	log.Fatal(r.Run(":" + port))
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal("❌ Server failed:", err)
+	}
 }
 
-// ==================== ADMIN AUTH HANDLERS ====================
-func adminRegisterHandler(c *gin.Context) {
-	var creds creds
-	if err := c.BindJSON(&creds); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	if creds.Username == "" || creds.Password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing fields"})
-		return
-	}
-
-	count, err := adminUsersCollection.CountDocuments(context.Background(), bson.M{"username": creds.Username})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
-		return
-	}
-	if count > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "user exists"})
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(creds.Password), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "hash error"})
-		return
-	}
-
-	_, err = adminUsersCollection.InsertOne(context.Background(), bson.M{
-		"username": creds.Username,
-		"password": string(hash),
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db insert error"})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"status": "created"})
-}
-
-func adminLoginHandler(c *gin.Context) {
-	var creds creds
-	if err := c.BindJSON(&creds); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-
-	var user adminUser
-	if err := adminUsersCollection.FindOne(context.Background(), bson.M{"username": creds.Username}).Decode(&user); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
-	}
-	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(creds.Password)) != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username": creds.Username,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
-	})
-	tokenStr, err := token.SignedString(jwtSecret)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "token error"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"token": tokenStr})
-}
-
-// ==================== USERS & POSTS ====================
+// ===== USERS =====
 func createUserHandler(c *gin.Context) {
 	var user struct {
 		UID           string `json:"uid"`
@@ -353,7 +258,7 @@ func deleteUserHandler(c *gin.Context) {
 	c.String(http.StatusOK, "User deleted successfully")
 }
 
-// ==================== POSTS ====================
+// ===== POSTS =====
 func getPostsHandler(c *gin.Context) {
 	cursor, err := postsCollection.Find(context.Background(), bson.M{})
 	if err != nil {
@@ -399,7 +304,7 @@ func deletePostHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Post deleted successfully")
 }
 
-// ==================== CHAT ====================
+// ===== CHAT =====
 func getMessagesHandler(c *gin.Context) {
 	cursor, err := messagesCollection.Find(context.Background(), bson.M{})
 	if err != nil {
@@ -434,7 +339,7 @@ func sendMessageHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, msg)
 }
 
-// ==================== PAYMENTS ====================
+// ===== PAYMENTS =====
 func addPaymentHandler(c *gin.Context) {
 	var payment map[string]interface{}
 	if err := c.BindJSON(&payment); err != nil {
@@ -469,6 +374,7 @@ func getPaymentsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, payments)
 }
 
+// ✅ FIXED: real-time and DB update for month
 func updatePaymentMonthHandler(c *gin.Context) {
 	var req struct {
 		ID    string `json:"_id"`
@@ -492,6 +398,7 @@ func updatePaymentMonthHandler(c *gin.Context) {
 		return
 	}
 
+	// Get updated document
 	var updated bson.M
 	err = paymentCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&updated)
 	if err != nil {
@@ -499,6 +406,7 @@ func updatePaymentMonthHandler(c *gin.Context) {
 		return
 	}
 
+	// 🔁 Emit real-time event to all connected sockets
 	for _, conn := range connectedUsers {
 		conn.Emit("payment_update", updated)
 	}
@@ -506,7 +414,7 @@ func updatePaymentMonthHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, updated)
 }
 
-// ==================== MODULES ====================
+// ===== MODULES =====
 func uploadModuleHandler(c *gin.Context) {
 	title := c.PostForm("title")
 	file, err := c.FormFile("file")
@@ -572,7 +480,7 @@ func deleteModuleHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Module deleted successfully")
 }
 
-// ==================== GRADES ====================
+// ===== GRADES =====
 func uploadGradeHandler(c *gin.Context) {
 	var req struct {
 		UserID   string `json:"userId"`
