@@ -28,12 +28,8 @@ var (
 	modulesCollection  *mongo.Collection
 	gradesCollection   *mongo.Collection
 	server             *socketio.Server
-
-	// Map to track connected users
-	connectedUsers = make(map[string]socketio.Conn)
-
-	// mongo client (kept accessible for some handlers if needed)
-	mongoClient *mongo.Client
+	connectedUsers     = make(map[string]socketio.Conn)
+	mongoClient        *mongo.Client
 )
 
 var BACKEND_URL = "https://publicbackend-production.up.railway.app"
@@ -46,17 +42,14 @@ type Module struct {
 }
 
 func main() {
-	// Load env
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ No .env file found, using system environment variables")
+		log.Println("⚠️ No .env file found")
 	}
-
 	mongoURI := os.Getenv("MONGO_URI")
 	if mongoURI == "" {
 		log.Fatal("❌ MONGO_URI not set")
 	}
 
-	// Connect to MongoDB
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal("❌ MongoDB connect failed:", err)
@@ -77,7 +70,6 @@ func main() {
 	modulesCollection = db.Collection("modules")
 	gradesCollection = db.Collection("grades")
 
-	// Socket.IO
 	server = socketio.NewServer(nil)
 
 	server.OnConnect("/", func(s socketio.Conn) error {
@@ -105,52 +97,50 @@ func main() {
 	go server.Serve()
 	defer server.Close()
 
-	// Gin setup
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:1420", "https://publicbackend-production.up.railway.app"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// Socket.IO endpoints
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
 
-	// API endpoints (keep your original ones)
+	// ========== USER & POST ==========
 	r.POST("/createUser", createUserHandler)
 	r.POST("/login", loginHandler)
 	r.POST("/user", getUserProfileHandler)
 	r.GET("/getUsers", getUsersHandler)
 	r.DELETE("/deleteUser", deleteUserHandler)
-
 	r.GET("/getPosts", getPostsHandler)
 	r.POST("/uploadPost", uploadPostHandler)
 	r.DELETE("/deletePost", deletePostHandler)
 
+	// ========== CHAT ==========
 	r.GET("/getMessages", getMessagesHandler)
 	r.POST("/sendMessage", sendMessageHandler)
 
+	// ========== PAYMENTS ==========
 	r.POST("/addPayment", addPaymentHandler)
 	r.GET("/getPayments", getPaymentsHandler)
 	r.PATCH("/updatePaymentMonth", updatePaymentMonthHandler)
 
+	// ========== MODULES ==========
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
 	r.DELETE("/deleteModule", deleteModuleHandler)
 
-	// Grades endpoints (added)
-	r.POST("/uploadGrade", uploadGradeHandler)   // accepts JSON { userId, userName, photoUrl, note? }
-	r.GET("/getGrades", getGradesHandler)        // optional ?userId=<mongo_id>
-	r.DELETE("/deleteGrade", deleteGradeHandler) // ?id=<gradeObjectId>
+	// ========== GRADES ==========
+	r.POST("/uploadGrade", uploadGradeHandler)
+	r.GET("/getGrades", getGradesHandler)
+	r.DELETE("/deleteGrade", deleteGradeHandler)
 
-	// static uploads if you store local files (optional)
 	r.Static("/uploads", "./uploads")
 
-	// start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8084"
@@ -161,12 +151,7 @@ func main() {
 	}
 }
 
-// ---------------- existing handlers (kept same as your working code) ----------------
-// For brevity I include the essential handlers that were in your working file.
-// If you already have these in your main.go, keep them — below only includes those
-// that are required for the full program to compile along with the new grades handlers.
-
-// (--- Users ---)
+// ===== USERS =====
 func createUserHandler(c *gin.Context) {
 	var user map[string]interface{}
 	if err := c.BindJSON(&user); err != nil {
@@ -188,7 +173,6 @@ func loginHandler(c *gin.Context) {
 		c.String(http.StatusBadRequest, "Invalid JSON")
 		return
 	}
-
 	filter := bson.M{"email": req["email"], "password": req["password"]}
 	var user map[string]interface{}
 	if err := usersCollection.FindOne(context.Background(), filter).Decode(&user); err != nil {
@@ -206,13 +190,11 @@ func getUserProfileHandler(c *gin.Context) {
 		c.String(http.StatusBadRequest, "UID required")
 		return
 	}
-
 	var user bson.M
 	if err := usersCollection.FindOne(context.Background(), bson.M{"uid": req.UID}).Decode(&user); err != nil {
 		c.String(http.StatusNotFound, "User not found")
 		return
 	}
-
 	c.JSON(http.StatusOK, user)
 }
 
@@ -235,17 +217,15 @@ func deleteUserHandler(c *gin.Context) {
 		c.String(http.StatusBadRequest, "UID required")
 		return
 	}
-
 	_, err := usersCollection.DeleteOne(context.Background(), bson.M{"uid": req.UID})
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to delete user")
 		return
 	}
-
 	c.String(http.StatusOK, "User deleted successfully")
 }
 
-// --- Timeline ---
+// ===== POSTS =====
 func getPostsHandler(c *gin.Context) {
 	cursor, err := postsCollection.Find(context.Background(), bson.M{})
 	if err != nil {
@@ -291,7 +271,7 @@ func deletePostHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Post deleted successfully")
 }
 
-// --- Chat ---
+// ===== CHAT =====
 func getMessagesHandler(c *gin.Context) {
 	cursor, err := messagesCollection.Find(context.Background(), bson.M{})
 	if err != nil {
@@ -309,37 +289,24 @@ func sendMessageHandler(c *gin.Context) {
 		c.String(http.StatusBadRequest, "Invalid JSON")
 		return
 	}
-
-	// Normalization
-	if msg["senderId"] == nil && msg["sender"] != nil {
-		msg["senderId"] = msg["sender"]
-	}
-	if msg["receiverId"] == nil && msg["receiver"] != nil {
-		msg["receiverId"] = msg["receiver"]
-	}
-
 	msg["createdAt"] = time.Now().Format(time.RFC3339)
-
 	_, err := messagesCollection.InsertOne(context.Background(), msg)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to send message")
 		return
 	}
-
 	senderID := fmt.Sprint(msg["senderId"])
 	receiverID := fmt.Sprint(msg["receiverId"])
-
 	if conn, ok := connectedUsers[senderID]; ok {
 		conn.Emit("receive_message", msg)
 	}
 	if conn, ok := connectedUsers[receiverID]; ok {
 		conn.Emit("receive_message", msg)
 	}
-
 	c.JSON(http.StatusOK, msg)
 }
 
-// --- Payments ---
+// ===== PAYMENTS =====
 func addPaymentHandler(c *gin.Context) {
 	var payment map[string]interface{}
 	if err := c.BindJSON(&payment); err != nil {
@@ -350,8 +317,7 @@ func addPaymentHandler(c *gin.Context) {
 		payment["monthly"] = map[string]string{
 			"june": "Pending", "july": "Pending", "august": "Pending",
 			"september": "Pending", "october": "Pending", "november": "Pending",
-			"december": "Pending", "january": "Pending", "february": "Pending",
-			"march": "Pending",
+			"december": "Pending", "january": "Pending", "february": "Pending", "march": "Pending",
 		}
 	}
 	payment["createdAt"] = time.Now()
@@ -375,6 +341,7 @@ func getPaymentsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, payments)
 }
 
+// ✅ FIXED: real-time and DB update for month
 func updatePaymentMonthHandler(c *gin.Context) {
 	var req struct {
 		ID    string `json:"_id"`
@@ -382,65 +349,64 @@ func updatePaymentMonthHandler(c *gin.Context) {
 		Value string `json:"value"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		c.String(http.StatusBadRequest, "Invalid JSON")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
 	objID, err := primitive.ObjectIDFromHex(req.ID)
 	if err != nil {
-		c.String(http.StatusBadRequest, "Invalid ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
 		return
 	}
+
 	update := bson.M{"$set": bson.M{"monthly." + req.Month: req.Value}}
 	_, err = paymentCollection.UpdateOne(context.Background(), bson.M{"_id": objID}, update)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to update month")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update month"})
 		return
 	}
-	c.String(http.StatusOK, "Month updated successfully")
+
+	// Get updated document
+	var updated bson.M
+	err = paymentCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&updated)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch updated payment"})
+		return
+	}
+
+	// 🔁 Emit real-time event to all connected sockets
+	for _, conn := range connectedUsers {
+		conn.Emit("payment_update", updated)
+	}
+
+	c.JSON(http.StatusOK, updated)
 }
 
-// --- Modules ---
+// ===== MODULES =====
 func uploadModuleHandler(c *gin.Context) {
 	title := c.PostForm("title")
-
 	file, err := c.FormFile("file")
 	if err != nil {
 		c.String(http.StatusBadRequest, "File not provided")
 		return
 	}
-
-	// Ensure uploads folder exists
 	if _, err := os.Stat("./uploads"); os.IsNotExist(err) {
 		os.Mkdir("./uploads", os.ModePerm)
 	}
-
-	// Save file
 	filename := filepath.Base(file.Filename)
 	savePath := "./uploads/" + filename
 	if err := c.SaveUploadedFile(file, savePath); err != nil {
 		c.String(http.StatusInternalServerError, "Failed to save file")
 		return
 	}
-
-	// Generate public URL
 	publicUrl := fmt.Sprintf("%s/uploads/%s", BACKEND_URL, filename)
-
-	// Insert module into MongoDB
-	module := Module{
-		Title:     title,
-		FileUrl:   publicUrl,
-		CreatedAt: time.Now(),
-	}
-
+	module := Module{Title: title, FileUrl: publicUrl, CreatedAt: time.Now()}
 	res, err := modulesCollection.InsertOne(context.Background(), module)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "DB insert failed")
 		return
 	}
-
 	module.ID = res.InsertedID.(primitive.ObjectID)
 	c.JSON(http.StatusOK, module)
-
 }
 
 func getModulesHandler(c *gin.Context) {
@@ -450,10 +416,7 @@ func getModulesHandler(c *gin.Context) {
 		return
 	}
 	var modules []Module
-	if err := cursor.All(context.Background(), &modules); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to decode modules")
-		return
-	}
+	cursor.All(context.Background(), &modules)
 	c.JSON(http.StatusOK, modules)
 }
 
@@ -473,9 +436,7 @@ func deleteModuleHandler(c *gin.Context) {
 		c.String(http.StatusNotFound, "Module not found")
 		return
 	}
-	// If fileUrl was a local path, remove it (if you used local saves)
 	if filePath, ok := module["fileUrl"].(string); ok {
-		// skip error
 		_ = os.Remove(filePath)
 	}
 	_, err = modulesCollection.DeleteOne(context.Background(), bson.M{"_id": objID})
@@ -486,10 +447,7 @@ func deleteModuleHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Module deleted successfully")
 }
 
-// ---------------- Grades Handlers ----------------
-
-// uploadGradeHandler accepts JSON:
-// { "userId": "<mongo _id>", "userName": "Name", "photoUrl": "<cloudinary url>", "note": "optional" }
+// ===== GRADES =====
 func uploadGradeHandler(c *gin.Context) {
 	var req struct {
 		UserID   string `json:"userId"`
@@ -501,44 +459,29 @@ func uploadGradeHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
-
-	doc := bson.M{
-		"userId":    req.UserID,
-		"userName":  req.UserName,
-		"photoUrl":  req.PhotoURL,
-		"note":      req.Note,
-		"createdAt": time.Now(),
-	}
-
+	doc := bson.M{"userId": req.UserID, "userName": req.UserName, "photoUrl": req.PhotoURL, "note": req.Note, "createdAt": time.Now()}
 	res, err := gradesCollection.InsertOne(context.Background(), doc)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save grade"})
 		return
 	}
-
 	doc["_id"] = res.InsertedID
 	c.JSON(http.StatusOK, doc)
 }
 
-// getGradesHandler supports optional ?userId=<mongo_id>
 func getGradesHandler(c *gin.Context) {
 	userId := c.Query("userId")
-
 	filter := bson.M{}
 	if userId != "" {
 		filter["userId"] = userId
 	}
-
 	cursor, err := gradesCollection.Find(context.Background(), filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch grades"})
 		return
 	}
 	var grades []bson.M
-	if err := cursor.All(context.Background(), &grades); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode grades"})
-		return
-	}
+	cursor.All(context.Background(), &grades)
 	c.JSON(http.StatusOK, grades)
 }
 
