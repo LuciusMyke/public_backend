@@ -34,6 +34,15 @@ var (
 
 var BACKEND_URL = "https://publicbackend-production.up.railway.app"
 
+type ActivityProgress struct {
+	StudentID   string    `json:"studentId" bson:"studentId"`
+	ActivityID  string    `json:"activityId" bson:"activityId"`
+	Score       int       `json:"score" bson:"score"`
+	Total       int       `json:"total" bson:"total"`
+	Stars       int       `json:"stars" bson:"stars"`
+	CompletedAt time.Time `json:"completedAt" bson:"completedAt"`
+}
+
 type Module struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Title     string             `bson:"title" json:"title"`
@@ -138,7 +147,7 @@ func main() {
 	r.POST("/uploadGrade", uploadGradeHandler)
 	r.GET("/getGrades", getGradesHandler)
 	r.DELETE("/deleteGrade", deleteGradeHandler)
-
+	r.POST("/saveActivityProgress", saveActivityProgressHandler)
 	r.Static("/uploads", "./uploads")
 
 	port := os.Getenv("PORT")
@@ -535,4 +544,34 @@ func deleteGradeHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Grade deleted successfully"})
+}
+func saveActivityProgressHandler(c *gin.Context) {
+	var progress ActivityProgress
+
+	// Bind the incoming JSON to the struct
+	if err := c.BindJSON(&progress); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON: " + err.Error()})
+		return
+	}
+
+	// Create a document for MongoDB
+	doc := bson.M{
+		"userId":      progress.StudentID, // Use userId for consistency with getGradesHandler
+		"activityId":  progress.ActivityID,
+		"score":       progress.Score,
+		"total":       progress.Total,
+		"stars":       progress.Stars,
+		"completedAt": time.Now(),             // Overwrite the time to ensure server time is used
+		"type":        "interactive_activity", // Add a type to distinguish from regular grades
+	}
+
+	// Save to the gradesCollection
+	res, err := gradesCollection.InsertOne(context.Background(), doc)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save activity progress"})
+		return
+	}
+
+	doc["_id"] = res.InsertedID
+	c.JSON(http.StatusOK, doc)
 }
