@@ -151,7 +151,19 @@ r.GET("/ping", func(c *gin.Context) {
 	r.GET("/getGrades", getGradesHandler)
 	r.DELETE("/deleteGrade", deleteGradeHandler)
 	r.POST("/saveActivityProgress", saveActivityProgressHandler)
-	r.Static("/uploads", "./uploads")
+	r.GET("/uploads/:filename", func(c *gin.Context) {
+    filename := c.Param("filename")
+    filePath := filepath.Join("uploads", filename)
+
+    if _, err := os.Stat(filePath); os.IsNotExist(err) {
+        c.String(http.StatusNotFound, "File not found")
+        return
+    }
+
+    // Detect correct content type
+    c.FileAttachment(filePath, filename)
+})
+
 
 	port := os.Getenv("PORT")
 	if port == "" {
