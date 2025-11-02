@@ -160,9 +160,10 @@ r.GET("/ping", func(c *gin.Context) {
         return
     }
 
-    // Detect correct content type
-    c.FileAttachment(filePath, filename)
+    c.Header("Content-Disposition", "inline") // show directly
+    c.File(filePath)
 })
+
 
 
 	port := os.Getenv("PORT")
