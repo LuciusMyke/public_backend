@@ -105,10 +105,7 @@ func main() {
 
 	go server.Serve()
 	defer server.Close()
-	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-    w.WriteHeader(http.StatusOK)
-    w.Write([]byte("pong"))
-})
+
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -119,7 +116,9 @@ func main() {
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
-
+r.GET("/ping", func(c *gin.Context) {
+    c.String(http.StatusOK, "pong")
+})
 	r.GET("/socket.io/*any", gin.WrapH(server))
 	r.POST("/socket.io/*any", gin.WrapH(server))
 
