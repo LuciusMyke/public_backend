@@ -32,7 +32,7 @@ var (
 	mongoClient        *mongo.Client
 )
 
-var BACKEND_URL = "https://publicbackend-production.up.railway.app"
+var BACKEND_URL = "https://public-backend-ynby.onrender.com"
 
 type ActivityProgress struct {
 	StudentID   string    `json:"studentId" bson:"studentId"`
