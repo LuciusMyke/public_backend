@@ -145,7 +145,7 @@ r.GET("/ping", func(c *gin.Context) {
 	r.POST("/uploadModule", uploadModuleHandler)
 	r.GET("/getModules", getModulesHandler)
 	r.DELETE("/deleteModule", deleteModuleHandler)
-
+	r.POST("/uploadModuleLink", uploadModuleLinkHandler)
 	// ========== GRADES ==========
 	r.POST("/uploadGrade", uploadGradeHandler)
 	r.GET("/getGrades", getGradesHandler)
@@ -590,4 +590,34 @@ func saveActivityProgressHandler(c *gin.Context) {
 
 	doc["_id"] = res.InsertedID
 	c.JSON(http.StatusOK, doc)
+}
+// ===== MODULES (Link Upload) =====
+func uploadModuleLinkHandler(c *gin.Context) {
+    // Use the Module struct to bind the incoming JSON
+    var module Module 
+    if err := c.BindJSON(&module); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+        return
+    }
+
+    // Validate the required fields
+    if module.Title == "" || module.FileUrl == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Title and FileUrl are required"})
+        return
+    }
+
+    // Set the creation timestamp and insert into MongoDB
+    module.CreatedAt = time.Now()
+
+    // Ensure you don't overwrite an existing ID if the JSON payload included one
+    module.ID = primitive.NilObjectID 
+
+    res, err := modulesCollection.InsertOne(context.Background(), module)
+    if err != nil {
+        c.String(http.StatusInternalServerError, "DB insert failed")
+        return
+    }
+
+    module.ID = res.InsertedID.(primitive.ObjectID)
+    c.JSON(http.StatusOK, module)
 }
