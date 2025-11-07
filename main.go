@@ -147,6 +147,7 @@ r.GET("/ping", func(c *gin.Context) {
 	r.DELETE("/deleteModule", deleteModuleHandler)
 	r.POST("/uploadModuleLink", uploadModuleLinkHandler)
 	// ========== GRADES ==========
+	r.POST("/uploadGradeFile", uploadGradeFileHandler)
 	r.POST("/uploadGrade", uploadGradeHandler)
 	r.GET("/getGrades", getGradesHandler)
 	r.DELETE("/deleteGrade", deleteGradeHandler)
@@ -506,6 +507,52 @@ func deleteModuleHandler(c *gin.Context) {
 }
 
 // ===== GRADES =====
+// ===== UPLOAD GRADE FILE (for non-image files) =====
+func uploadGradeFileHandler(c *gin.Context) {
+    userId := c.PostForm("userId")
+    userName := c.PostForm("userName")
+    note := c.PostForm("note")
+
+    file, err := c.FormFile("file")
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "File is required"})
+        return
+    }
+
+    // Ensure uploads folder exists
+    if _, err := os.Stat("./uploads"); os.IsNotExist(err) {
+        os.Mkdir("./uploads", os.ModePerm)
+    }
+
+    filename := filepath.Base(file.Filename)
+    savePath := "./uploads/" + filename
+
+    if err := c.SaveUploadedFile(file, savePath); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+        return
+    }
+
+    publicUrl := fmt.Sprintf("%s/uploads/%s", BACKEND_URL, filename)
+
+    // Save record to MongoDB
+    doc := bson.M{
+        "userId":    userId,
+        "userName":  userName,
+        "photoUrl":  publicUrl,
+        "note":      note,
+        "createdAt": time.Now(),
+    }
+
+    res, err := gradesCollection.InsertOne(context.Background(), doc)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file record"})
+        return
+    }
+
+    doc["_id"] = res.InsertedID
+    c.JSON(http.StatusOK, doc)
+}
+
 func uploadGradeHandler(c *gin.Context) {
 	var req struct {
 		UserID   string `json:"userId"`
