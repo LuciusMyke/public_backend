@@ -124,6 +124,8 @@ r.GET("/ping", func(c *gin.Context) {
 
 	// ========== USER & POST ==========
 	r.POST("/createUser", createUserHandler)
+	r.POST("/uploadProfilePic", uploadProfilePicHandler) 
+	r.PATCH("/updateUser", updateUserProfileHandler)
 	r.POST("/login", loginHandler)
 	r.POST("/user", getUserProfileHandler)
 	r.GET("/getUsers", getUsersHandler)
@@ -131,6 +133,7 @@ r.GET("/ping", func(c *gin.Context) {
 	r.GET("/getPosts", getPostsHandler)
 	r.POST("/uploadPost", uploadPostHandler)
 	r.DELETE("/deletePost", deletePostHandler)
+	
 
 	// ========== CHAT ==========
 	r.GET("/getMessages", getMessagesHandler)
@@ -193,6 +196,7 @@ func createUserHandler(c *gin.Context) {
 		MotherBday    string `json:"motherBday"`
 		FatherBday    string `json:"fatherBday"`
 		ContactNumber string `json:"contactNumber"`
+		ProfilePicURL string `json:"profilePicUrl"`
 	}
 
 	if err := c.BindJSON(&user); err != nil {
@@ -215,6 +219,7 @@ func createUserHandler(c *gin.Context) {
 		"fatherBday":    user.FatherBday,
 		"contactNumber": user.ContactNumber,
 		"createdAt":     time.Now(),
+		"profilePicUrl": user.ProfilePicURL,
 	}
 
 	_, err := usersCollection.InsertOne(context.Background(), doc)
@@ -225,7 +230,69 @@ func createUserHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "User created successfully"})
 }
+func uploadProfilePicHandler(c *gin.Context) {
+	file, err := c.FormFile("profile_pic")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Profile picture file not provided"})
+		return
+	}
 
+	// Ensure uploads folder exists, like in uploadModuleHandler
+	if _, err := os.Stat("./uploads"); os.IsNotExist(err) {
+		os.Mkdir("./uploads", os.ModePerm)
+	}
+
+	// Create a unique filename (e.g., using a timestamp) to prevent clashes
+	extension := filepath.Ext(file.Filename)
+	uniqueFilename := fmt.Sprintf("profile_%d%s", time.Now().UnixNano(), extension)
+	savePath := "./uploads/" + uniqueFilename
+
+	if err := c.SaveUploadedFile(file, savePath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+		return
+	}
+
+	// Return the public URL that can be stored in the database
+	publicUrl := fmt.Sprintf("%s/uploads/%s", BACKEND_URL, uniqueFilename)
+	c.JSON(http.StatusOK, gin.H{"profilePicUrl": publicUrl})
+}
+
+// updateUserProfileHandler allows updating user fields like profilePicUrl.
+func updateUserProfileHandler(c *gin.Context) {
+	var req struct {
+		UID string `json:"uid"`
+		// ProfilePicURL is set to 'omitempty' so it's not required for a general name/info update
+		ProfilePicURL string `json:"profilePicUrl,omitempty"`
+		Name string `json:"name,omitempty"`
+		// Add other fields you want to allow updating here
+	}
+	if err := c.BindJSON(&req); err != nil || req.UID == "" {
+		c.String(http.StatusBadRequest, "Invalid JSON or UID required")
+		return
+	}
+
+	updateFields := bson.M{}
+	if req.ProfilePicURL != "" {
+		updateFields["profilePicUrl"] = req.ProfilePicURL
+	}
+	if req.Name != "" {
+		updateFields["name"] = req.Name
+	}
+	
+	if len(updateFields) == 0 {
+		c.String(http.StatusBadRequest, "No fields to update")
+		return
+	}
+
+	update := bson.M{"$set": updateFields}
+	_, err := usersCollection.UpdateOne(context.Background(), bson.M{"uid": req.UID}, update)
+
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to update user profile")
+		return
+	}
+	c.String(http.StatusOK, "Profile updated successfully")
+}
 func loginHandler(c *gin.Context) {
 	var req map[string]string
 	if err := c.BindJSON(&req); err != nil {
